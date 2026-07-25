@@ -1,0 +1,11 @@
+.idea/
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 根目录中的 IDE 示例脚本不属于后端项目。
+/main.py
