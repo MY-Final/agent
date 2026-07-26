@@ -106,8 +106,12 @@ class TaskService:
         storage: MinIOStorage,
         task_id: uuid.UUID,
     ) -> None:
-        task = await TaskService.get(session, task_id)
-        object_keys = [task_file.object_key for task_file in task.files]
+        await TaskService.ensure_exists(session, task_id)
+        # 直接查询文件表，避免同一会话中 Task.files 已缓存为空时漏删对象。
+        object_key_statement = select(TaskFile.object_key).where(
+            TaskFile.task_id == task_id
+        )
+        object_keys = list((await session.scalars(object_key_statement)).all())
 
         # 先删除对象存储中的文件，失败时保留数据库记录，便于后续重试。
         try:

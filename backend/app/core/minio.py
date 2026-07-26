@@ -1,10 +1,12 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import quote
 
 import aioboto3
+import aiofiles
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -107,43 +109,81 @@ class MinIOStorage:
 
     async def object_exists(self, object_key: str) -> bool:
         async with self._client() as client:
+            return await self._object_exists_with_client(client, object_key)
+
+    async def download_to_path(self, object_key: str, destination: Path) -> int:
+        """将 MinIO 对象以流式方式下载到指定临时文件。"""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        async with self._client() as client:
             try:
-                await client.head_object(
+                response = await client.get_object(
                     Bucket=settings.minio_bucket,
                     Key=object_key,
                 )
-                return True
             except ClientError as exc:
-                status_code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                status_code = exc.response.get("ResponseMetadata", {}).get(
+                    "HTTPStatusCode"
+                )
                 error_code = exc.response.get("Error", {}).get("Code")
-                if status_code == 404 or error_code in {"404", "NoSuchKey", "NotFound"}:
-                    return False
+                if status_code == 404 or error_code in {
+                    "404",
+                    "NoSuchKey",
+                    "NotFound",
+                }:
+                    raise FileNotFoundError("MinIO 中不存在该文件对象") from exc
                 raise
+
+            expected_size = int(response.get("ContentLength", -1))
+            written_size = 0
+            body = response["Body"]
+            async with body:
+                async with aiofiles.open(destination, "wb") as output:
+                    while chunk := await body.read(1024 * 1024):
+                        written_size += len(chunk)
+                        await output.write(chunk)
+
+        if expected_size >= 0 and written_size != expected_size:
+            destination.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"MinIO 文件下载不完整，预期 {expected_size} 字节，实际 {written_size} 字节"
+            )
+        return written_size
 
     async def delete_object(self, object_key: str) -> None:
         async with self._client() as client:
             await client.delete_object(Bucket=settings.minio_bucket, Key=object_key)
+            if await self._object_exists_with_client(client, object_key):
+                raise RuntimeError(f"MinIO 对象删除后仍然存在：{object_key}")
 
     async def delete_objects(self, object_keys: list[str]) -> None:
         if not object_keys:
             return
 
+        # 当前 MinIO 前置代理对 S3 DeleteObjects 批量请求支持不完整，
+        # 逐个删除并通过 HEAD 复核，避免数据库已删除但对象仍残留。
         async with self._client() as client:
-            for offset in range(0, len(object_keys), 1000):
-                batch = object_keys[offset : offset + 1000]
-                response = await client.delete_objects(
+            for object_key in object_keys:
+                await client.delete_object(
                     Bucket=settings.minio_bucket,
-                    Delete={
-                        "Objects": [{"Key": object_key} for object_key in batch],
-                        "Quiet": False,
-                    },
+                    Key=object_key,
                 )
-                errors = response.get("Errors", [])
-                if errors:
-                    details = ", ".join(
-                        f"{item.get('Key')}: {item.get('Message')}" for item in errors
-                    )
-                    raise RuntimeError(f"删除 MinIO 对象失败：{details}")
+                if await self._object_exists_with_client(client, object_key):
+                    raise RuntimeError(f"MinIO 对象删除后仍然存在：{object_key}")
+
+    @staticmethod
+    async def _object_exists_with_client(client: Any, object_key: str) -> bool:
+        try:
+            await client.head_object(
+                Bucket=settings.minio_bucket,
+                Key=object_key,
+            )
+            return True
+        except ClientError as exc:
+            status_code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            error_code = exc.response.get("Error", {}).get("Code")
+            if status_code == 404 or error_code in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            raise
 
     async def generate_presigned_download_url(
         self,

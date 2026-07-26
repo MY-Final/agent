@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -48,6 +48,29 @@ class Settings(BaseSettings):
         alias="MAX_UPLOAD_SIZE_BYTES",
     )
 
+    llm_api_key: SecretStr | None = Field(default=None, alias="LLM_API_KEY")
+    llm_base_url: str | None = Field(default=None, alias="LLM_BASE_URL")
+    llm_model_name: str = Field(default="gpt-4.1-mini", alias="LLM_MODEL_NAME")
+    llm_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        le=600,
+        alias="LLM_TIMEOUT_SECONDS",
+    )
+
+    pdf_text_min_chars: int = Field(
+        default=300,
+        ge=1,
+        alias="PDF_TEXT_MIN_CHARS",
+    )
+    ocr_language: str = Field(default="ch", alias="OCR_LANGUAGE")
+    ocr_render_scale: float = Field(
+        default=2.0,
+        ge=1.0,
+        le=4.0,
+        alias="OCR_RENDER_SCALE",
+    )
+
     @field_validator("minio_endpoint")
     @classmethod
     def normalize_minio_endpoint(cls, value: str) -> str:
@@ -59,6 +82,18 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.lstrip().startswith("["):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
+
+    @field_validator("llm_api_key", "llm_base_url", mode="before")
+    @classmethod
+    def empty_value_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("llm_base_url")
+    @classmethod
+    def normalize_llm_base_url(cls, value: str | None) -> str | None:
+        return value.rstrip("/") if value else None
 
     @property
     def minio_url(self) -> str:

@@ -56,6 +56,12 @@ class Task(Base):
         lazy="raise",
         order_by="TaskFile.uploaded_at",
     )
+    parse_results: Mapped[list["TaskParseResult"]] = relationship(
+        back_populates="task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="raise",
+    )
 
 
 class TaskFile(Base):
@@ -80,3 +86,8 @@ class TaskFile(Base):
     )
 
     task: Mapped[Task] = relationship(back_populates="files")
+    parse_results: Mapped[list["TaskParseResult"]] = relationship(
+        back_populates="file",
+        passive_deletes=True,
+        lazy="raise",
+    )
