@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "投标分析桌面程序默认窗口权限",
+  "windows": ["main"],
+  "permissions": ["core:default", "opener:default"]
+}
