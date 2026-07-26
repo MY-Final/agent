@@ -1,4 +1,5 @@
 import math
+import logging
 import uuid
 
 from sqlalchemy import delete, func, select
@@ -9,6 +10,9 @@ from app.core.exceptions import NotFoundException, StorageException
 from app.core.minio import MinIOStorage
 from app.models.task import Task, TaskFile, TaskStatus
 from app.schemas.task import TaskCreate, TaskListData, TaskListItem, TaskUpdate
+
+
+logger = logging.getLogger(__name__)
 
 
 class TaskService:
@@ -112,6 +116,12 @@ class TaskService:
             TaskFile.task_id == task_id
         )
         object_keys = list((await session.scalars(object_key_statement)).all())
+        from app.models.agent_run import AgentRun
+
+        thread_id_statement = select(AgentRun.thread_id).where(
+            AgentRun.task_id == task_id
+        )
+        thread_ids = list((await session.scalars(thread_id_statement)).all())
 
         # 先删除对象存储中的文件，失败时保留数据库记录，便于后续重试。
         try:
@@ -119,6 +129,19 @@ class TaskService:
         except Exception as exc:
             await session.rollback()
             raise StorageException("删除任务关联的 MinIO 文件失败") from exc
+
+        # checkpoint 没有业务外键，删除任务时做尽力清理，避免留下孤立状态。
+        if thread_ids:
+            from app.agent.graph import agent_graph_manager
+
+            for thread_id in thread_ids:
+                try:
+                    await agent_graph_manager.delete_thread(thread_id)
+                except Exception:
+                    logger.exception(
+                        "删除任务时清理 Agent checkpoint 失败，thread_id=%s",
+                        thread_id,
+                    )
 
         await session.execute(delete(Task).where(Task.id == task_id))
         await session.commit()

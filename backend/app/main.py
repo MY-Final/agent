@@ -13,6 +13,7 @@ from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
+from app.agent.graph import agent_graph_manager
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import AsyncSessionFactory, close_database, init_database
@@ -44,9 +45,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 exc,
             )
         await minio_storage.connect()
-        logger.info("PostgreSQL、Redis、MinIO 基础设施初始化完成")
+        await agent_graph_manager.connect()
+        logger.info("PostgreSQL、Redis、MinIO、LangGraph 基础设施初始化完成")
         yield
     finally:
+        await agent_graph_manager.disconnect()
         await redis_manager.disconnect()
         await minio_storage.disconnect()
         await close_database()
@@ -55,7 +58,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 app.add_middleware(

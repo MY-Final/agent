@@ -39,7 +39,13 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
 
 async def init_database() -> None:
     # 创建表前先导入模型，确保 SQLAlchemy 已收集全部表结构。
-    from app.models import match_result, parse_result, qualification, task  # noqa: F401
+    from app.models import (  # noqa: F401
+        agent_run,
+        match_result,
+        parse_result,
+        qualification,
+        task,
+    )
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)

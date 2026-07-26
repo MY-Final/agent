@@ -2,6 +2,7 @@ from functools import lru_cache
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -99,6 +100,15 @@ class Settings(BaseSettings):
     def minio_url(self) -> str:
         scheme = "https" if self.minio_secure else "http"
         return f"{scheme}://{self.minio_endpoint}"
+
+    @property
+    def langgraph_database_url(self) -> str:
+        """将 SQLAlchemy asyncpg 地址转换为 LangGraph checkpointer 地址。"""
+
+        url = make_url(self.database_url)
+        if url.drivername == "postgresql+asyncpg":
+            url = url.set(drivername="postgresql")
+        return url.render_as_string(hide_password=False)
 
 
 @lru_cache

@@ -1,6 +1,6 @@
-# 投标分析 Agent 后端（第二阶段）
+# 投标分析 Agent 后端（第三阶段）
 
-这是桌面端投标分析工具的后端。当前已提供任务和文件管理、标书解析 Skill、公司资质知识库和确定性资质匹配 Skill；本阶段不包含 RAG、向量检索、报告生成或 Agent 编排。
+这是桌面端投标分析工具的后端。当前已提供任务和文件管理、标书解析 Skill、公司资质知识库、确定性资质匹配 Skill，以及基于 LangGraph 的单任务分析 Agent。当前 Agent 支持自动解析、人工确认中断、确认后匹配和持久化恢复。
 
 ## 技术栈
 
@@ -12,6 +12,7 @@
 - PyMuPDF + PaddleOCR + python-docx
 - OpenAI 兼容结构化输出接口
 - PostgreSQL 结构化资质知识库与规则匹配
+- LangGraph + PostgreSQL checkpoint
 
 ## 项目结构
 
@@ -60,7 +61,13 @@ LLM_MODEL_NAME=模型名称
 
 ## 启动
 
-在 `backend` 目录运行：
+Windows 推荐在 `backend` 目录运行以下命令，启动入口会为 psycopg 配置兼容的事件循环：
+
+```powershell
+python -m app
+```
+
+开发时需要热重载可继续使用：
 
 ```powershell
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -68,10 +75,11 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 启动时 lifespan 会执行以下操作：
 
-1. 连接 PostgreSQL，并通过 `Base.metadata.create_all()` 创建任务、解析结果、资质知识库和匹配结果表。
+1. 连接 PostgreSQL，并通过 `Base.metadata.create_all()` 创建任务、解析结果、资质知识库、匹配结果和 Agent 运行表。
 2. 建立并检查 Redis 连接；Redis 不可用时以降级模式继续启动。
 3. 检查 MinIO bucket，不存在时自动创建。
-4. 关闭应用时释放 Redis、MinIO 和数据库资源。
+4. 初始化 LangGraph PostgreSQL checkpoint 表和连接。
+5. 关闭应用时释放 LangGraph、Redis、MinIO 和数据库资源。
 
 接口文档：
 
@@ -120,6 +128,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | POST | `/api/v1/skills/match` | 通过 task_id 或 parse_result_id 独立匹配 |
 | POST | `/api/v1/tasks/{task_id}/match` | 使用任务最新成功解析结果执行匹配 |
 | GET | `/api/v1/tasks/{task_id}/match-result` | 获取任务最新匹配报告 |
+| POST | `/api/v1/tasks/{task_id}/agent/start` | 启动 Agent，自动解析并停在人工确认节点 |
+| GET | `/api/v1/tasks/{task_id}/agent/status` | 查询 Agent 当前步骤、摘要和错误信息 |
+| POST | `/api/v1/tasks/{task_id}/agent/confirm` | 确认解析结果，继续执行资质匹配 |
+| POST | `/api/v1/tasks/{task_id}/agent/cancel` | 取消正在等待确认的 Agent 流程 |
 
 任务状态为：`created`、`parsing`、`analyzing`、`waiting_confirm`、`generating`、`completed`、`failed`。
 
@@ -236,6 +248,45 @@ Invoke-RestMethod -Method Get `
 
 匹配 Skill 逐条处理解析结果中的 `qualifications`，根据证书名称和等级、有效期、业绩关键词和金额、业绩数量和时间、人员证书和在职状态、注册资本等结构化规则输出 `matched_items`、`missing_items` 和 `risk_items`。规则无法可靠判断的要求会进入风险项并提示人工核验，不会调用大模型作主观判断。匹配报告写入 `task_match_results`，匹配时任务状态为 `analyzing`，成功后更新为 `waiting_confirm`，失败后更新为 `failed`。
 
+## 测试 Agent 流程
+
+Agent 主路径为：上传标书文件 -> 自动解析 -> 等待人工确认 -> 确认后匹配 -> 完成。启动前需要先为任务上传至少一个 PDF 或 DOCX 文件，并按需录入公司资质知识库。
+
+启动 Agent。该请求同步执行解析，成功后返回 `current_step: wait_confirm`：
+
+```powershell
+$taskId = "替换为任务ID"
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8000/api/v1/tasks/$taskId/agent/start"
+```
+
+查询状态。浏览器刷新或服务重启后，可继续用同一个接口查询持久化状态：
+
+```powershell
+Invoke-RestMethod -Method Get `
+  -Uri "http://localhost:8000/api/v1/tasks/$taskId/agent/status"
+```
+
+确认解析结果并继续匹配。请求体可使用 `{}`，也可附带人工备注：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8000/api/v1/tasks/$taskId/agent/confirm" `
+  -ContentType application/json `
+  -Body '{"remark":"解析内容已核对，可以继续匹配"}'
+```
+
+确认请求同步执行匹配。成功后 Agent 的 `current_step` 和 `status` 均为 `completed`，任务状态也会更新为 `completed`。解析结果保存在 `task_parse_results`，匹配结果保存在 `task_match_results`，业务运行状态保存在 `agent_runs`，节点 checkpoint 由 LangGraph 保存到 PostgreSQL。
+
+等待确认时可取消当前流程：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8000/api/v1/tasks/$taskId/agent/cancel"
+```
+
+取消不会删除已经生成的解析结果。第一版只允许取消等待确认的流程，不提供解析或匹配执行中的强制终止。
+
 ## 当前边界
 
 - 数据库初始化使用 `create_all`，适合当前开发阶段。进入持续迭代后建议引入 Alembic 管理 schema 迁移。
@@ -244,4 +295,6 @@ Invoke-RestMethod -Method Get `
 - 文件接口只接收标准 multipart 附件上传，不读取调用端或服务端的本地文件路径。
 - 标书解析目前为同步请求，适合调试与验证；长文档和 OCR 后续可平滑迁移到异步任务队列。
 - 资质匹配只使用结构化精确规则，不使用 RAG、向量库或大模型判断；规则无法覆盖的复杂条款需要人工核验。
-- 当前只解析 PDF 和 DOCX，不包含分析报告生成或 Agent 工作流。
+- 当前只解析 PDF 和 DOCX。
+- Agent 当前是单任务固定流程，不包含多 Agent、ReAct、RAG、报告生成、经分表生成或高并发任务队列。
+- 解析和匹配节点目前随接口同步执行；人工确认节点使用 LangGraph `interrupt`，checkpoint 和业务状态均持久化到 PostgreSQL。

@@ -68,6 +68,12 @@ class Task(Base):
         passive_deletes=True,
         lazy="raise",
     )
+    agent_runs: Mapped[list["AgentRun"]] = relationship(
+        back_populates="task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="raise",
+    )
 
 
 class TaskFile(Base):

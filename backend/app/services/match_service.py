@@ -55,6 +55,30 @@ class MatchService:
         )
 
     @staticmethod
+    async def match_parse_result(
+        session: AsyncSession,
+        parse_result_id: uuid.UUID,
+        *,
+        task_id: uuid.UUID | None = None,
+    ) -> TaskMatchResult:
+        """匹配指定解析记录，供 Agent 固定复用本次流程的解析结果。"""
+
+        parse_record = await MatchService._get_parse_result(session, parse_result_id)
+        resolved_task_id = task_id if task_id is not None else parse_record.task_id
+        if task_id is not None and parse_record.task_id != task_id:
+            raise AppException(
+                "解析结果不属于当前任务",
+                code=40932,
+                status_code=409,
+            )
+        return await MatchService._execute(
+            session=session,
+            parse_record=parse_record,
+            task_id=resolved_task_id,
+            update_task_status=resolved_task_id is not None,
+        )
+
+    @staticmethod
     async def get_latest_result(
         session: AsyncSession,
         task_id: uuid.UUID,
