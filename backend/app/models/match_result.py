@@ -10,17 +10,17 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 
-class ParseResultStatus(str, enum.Enum):
+class MatchResultStatus(str, enum.Enum):
     SUCCESS = "success"
     FAILED = "failed"
 
 
-class TaskParseResult(Base):
-    """保存一次标书解析执行的结构化结果或失败信息。"""
+class TaskMatchResult(Base):
+    """保存一次确定性资质匹配报告或失败信息。"""
 
-    __tablename__ = "task_parse_results"
+    __tablename__ = "task_match_results"
     __table_args__ = (
-        Index("ix_task_parse_results_task_created", "task_id", "created_at"),
+        Index("ix_task_match_results_task_created", "task_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -32,18 +32,17 @@ class TaskParseResult(Base):
         nullable=True,
         index=True,
     )
-    file_id: Mapped[uuid.UUID | None] = mapped_column(
+    parse_result_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("task_files.id", ondelete="SET NULL"),
+        ForeignKey("task_parse_results.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
     )
-    source_object_keys: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    status: Mapped[ParseResultStatus] = mapped_column(
+    status: Mapped[MatchResultStatus] = mapped_column(
         Enum(
-            ParseResultStatus,
-            name="parse_result_status",
+            MatchResultStatus,
+            name="match_result_status",
             values_callable=lambda enum_type: [item.value for item in enum_type],
         ),
         nullable=False,
@@ -60,11 +59,7 @@ class TaskParseResult(Base):
         onupdate=func.now(),
     )
 
-    task: Mapped["Task | None"] = relationship(back_populates="parse_results")
-    file: Mapped["TaskFile | None"] = relationship(back_populates="parse_results")
-    match_results: Mapped[list["TaskMatchResult"]] = relationship(
-        back_populates="parse_result",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        lazy="raise",
+    task: Mapped["Task | None"] = relationship(back_populates="match_results")
+    parse_result: Mapped["TaskParseResult | None"] = relationship(
+        back_populates="match_results"
     )

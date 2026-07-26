@@ -62,6 +62,12 @@ class Task(Base):
         passive_deletes=True,
         lazy="raise",
     )
+    match_results: Mapped[list["TaskMatchResult"]] = relationship(
+        back_populates="task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="raise",
+    )
 
 
 class TaskFile(Base):

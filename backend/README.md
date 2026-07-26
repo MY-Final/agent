@@ -1,6 +1,6 @@
 # 投标分析 Agent 后端（第二阶段）
 
-这是桌面端投标分析工具的后端。当前已提供任务和文件管理，以及独立的标书解析 Skill；本阶段不包含资质匹配、报告生成或 Agent 编排。
+这是桌面端投标分析工具的后端。当前已提供任务和文件管理、标书解析 Skill、公司资质知识库和确定性资质匹配 Skill；本阶段不包含 RAG、向量检索、报告生成或 Agent 编排。
 
 ## 技术栈
 
@@ -11,6 +11,7 @@
 - aioboto3 + MinIO（S3 兼容）
 - PyMuPDF + PaddleOCR + python-docx
 - OpenAI 兼容结构化输出接口
+- PostgreSQL 结构化资质知识库与规则匹配
 
 ## 项目结构
 
@@ -67,7 +68,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 启动时 lifespan 会执行以下操作：
 
-1. 连接 PostgreSQL，并通过 `Base.metadata.create_all()` 创建 `tasks`、`task_files`、`task_parse_results` 表。
+1. 连接 PostgreSQL，并通过 `Base.metadata.create_all()` 创建任务、解析结果、资质知识库和匹配结果表。
 2. 建立并检查 Redis 连接；Redis 不可用时以降级模式继续启动。
 3. 检查 MinIO bucket，不存在时自动创建。
 4. 关闭应用时释放 Redis、MinIO 和数据库资源。
@@ -108,6 +109,17 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | POST | `/api/v1/skills/parse` | 通过 task_id、file_id 或 object_key 独立调用解析 Skill |
 | POST | `/api/v1/tasks/{task_id}/parse` | 解析任务下全部 PDF/DOCX 文件 |
 | GET | `/api/v1/tasks/{task_id}/parse-result` | 获取任务最新解析结果 |
+| POST/GET | `/api/v1/qualifications/certificates` | 新增或查询企业资质证书 |
+| GET/PUT/DELETE | `/api/v1/qualifications/certificates/{id}` | 资质证书详情、更新、删除 |
+| POST/GET | `/api/v1/qualifications/performances` | 新增或查询业绩记录 |
+| GET/PUT/DELETE | `/api/v1/qualifications/performances/{id}` | 业绩详情、更新、删除 |
+| POST/GET | `/api/v1/qualifications/personnel` | 新增或查询人员证书 |
+| GET/PUT/DELETE | `/api/v1/qualifications/personnel/{id}` | 人员证书详情、更新、删除 |
+| POST/GET | `/api/v1/qualifications/company` | 新增或查询公司信息 |
+| GET/PUT/DELETE | `/api/v1/qualifications/company/{id}` | 公司信息详情、更新、删除 |
+| POST | `/api/v1/skills/match` | 通过 task_id 或 parse_result_id 独立匹配 |
+| POST | `/api/v1/tasks/{task_id}/match` | 使用任务最新成功解析结果执行匹配 |
+| GET | `/api/v1/tasks/{task_id}/match-result` | 获取任务最新匹配报告 |
 
 任务状态为：`created`、`parsing`、`analyzing`、`waiting_confirm`、`generating`、`completed`、`failed`。
 
@@ -154,6 +166,76 @@ PDF 先由 PyMuPDF 提取文字；有效字符少于 `PDF_TEXT_MIN_CHARS` 时才
 
 解析成功后结果写入 `task_parse_results`，任务状态更新为 `waiting_confirm`。提取、MinIO 下载或大模型调用失败时会写入失败记录，并将关联任务状态更新为 `failed`。
 
+## 测试资质知识库
+
+金额字段统一按“元”保存，币种默认使用 `CNY`。证书状态使用稳定枚举值：`valid`、`expired`、`revoked`。
+
+新增企业资质证书：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8000/api/v1/qualifications/certificates `
+  -ContentType application/json `
+  -Body '{"name":"建筑工程施工总承包","level":"一级","specialty":"建筑工程","cert_number":"CERT-001","valid_from":"2025-01-01","valid_to":"2028-12-31","status":"valid"}'
+```
+
+新增业绩：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8000/api/v1/qualifications/performances `
+  -ContentType application/json `
+  -Body '{"project_name":"办公楼建设项目","project_amount":8000000,"currency":"CNY","start_date":"2025-01-01","end_date":"2025-12-31","is_completed":true,"related_qualification":"建筑工程","description":"建筑工程施工总承包项目"}'
+```
+
+新增人员证书：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8000/api/v1/qualifications/personnel `
+  -ContentType application/json `
+  -Body '{"person_name":"张三","cert_type":"一级建造师","specialty":"建筑工程","cert_number":"PERSON-001","valid_to":"2028-12-31","is_on_job":true}'
+```
+
+新增公司信息：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8000/api/v1/qualifications/company `
+  -ContentType application/json `
+  -Body '{"company_name":"示例建设有限公司","legal_person":"李四","registered_capital":20000000,"establish_date":"2015-01-01","extra_info":{}}'
+```
+
+列表接口支持分页，并提供名称、有效性、金额范围、完成状态、在职状态等查询参数。资质记录的 `file_object_key` 可保存已上传到 MinIO 的证明文件对象键；删除记录时会同步删除该对象。
+
+## 测试资质匹配
+
+推荐顺序：先完成标书解析，再录入公司资质数据，最后执行任务级匹配：
+
+```powershell
+$taskId = "替换为已经解析成功的任务ID"
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8000/api/v1/tasks/$taskId/match"
+```
+
+独立匹配接口一次必须且只能提供 `task_id` 或 `parse_result_id`：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8000/api/v1/skills/match `
+  -ContentType application/json `
+  -Body '{"parse_result_id":"替换为解析结果ID"}'
+```
+
+查询任务最近一次匹配报告：
+
+```powershell
+Invoke-RestMethod -Method Get `
+  -Uri "http://localhost:8000/api/v1/tasks/$taskId/match-result"
+```
+
+匹配 Skill 逐条处理解析结果中的 `qualifications`，根据证书名称和等级、有效期、业绩关键词和金额、业绩数量和时间、人员证书和在职状态、注册资本等结构化规则输出 `matched_items`、`missing_items` 和 `risk_items`。规则无法可靠判断的要求会进入风险项并提示人工核验，不会调用大模型作主观判断。匹配报告写入 `task_match_results`，匹配时任务状态为 `analyzing`，成功后更新为 `waiting_confirm`，失败后更新为 `failed`。
+
 ## 当前边界
 
 - 数据库初始化使用 `create_all`，适合当前开发阶段。进入持续迭代后建议引入 Alembic 管理 schema 迁移。
@@ -161,4 +243,5 @@ PDF 先由 PyMuPDF 提取文字；有效字符少于 `PDF_TEXT_MIN_CHARS` 时才
 - 删除文件或任务时先删除 MinIO 对象，再提交数据库删除；对象存储失败时数据库记录会保留，便于重试和排查。
 - 文件接口只接收标准 multipart 附件上传，不读取调用端或服务端的本地文件路径。
 - 标书解析目前为同步请求，适合调试与验证；长文档和 OCR 后续可平滑迁移到异步任务队列。
-- 当前只解析 PDF 和 DOCX，不包含资质匹配、报告生成或 Agent 工作流。
+- 资质匹配只使用结构化精确规则，不使用 RAG、向量库或大模型判断；规则无法覆盖的复杂条款需要人工核验。
+- 当前只解析 PDF 和 DOCX，不包含分析报告生成或 Agent 工作流。
