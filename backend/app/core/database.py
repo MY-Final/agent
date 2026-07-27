@@ -18,6 +18,8 @@ class Base(DeclarativeBase):
 engine: AsyncEngine = create_async_engine(
     settings.database_url,
     echo=settings.database_echo,
+    # 即使开发环境打开 SQL 日志，也不输出 API Key、密码等绑定参数。
+    hide_parameters=True,
     pool_pre_ping=True,
 )
 AsyncSessionFactory = async_sessionmaker(
@@ -41,6 +43,7 @@ async def init_database() -> None:
     # 创建表前先导入模型，确保 SQLAlchemy 已收集全部表结构。
     from app.models import (  # noqa: F401
         agent_run,
+        llm_provider,
         match_result,
         parse_result,
         qualification,

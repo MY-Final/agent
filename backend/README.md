@@ -1,6 +1,6 @@
-# 投标分析 Agent 后端（第三阶段）
+# 投标分析 Agent 后端
 
-这是桌面端投标分析工具的后端。当前已提供任务和文件管理、标书解析 Skill、公司资质知识库、确定性资质匹配 Skill，以及基于 LangGraph 的单任务分析 Agent。当前 Agent 支持自动解析、人工确认中断、确认后匹配和持久化恢复。
+这是桌面端投标分析工具的后端。当前已提供任务和文件管理、标书解析 Skill、公司资质知识库、确定性资质匹配 Skill、基于 LangGraph 的单任务分析 Agent，以及可动态切换的多 LLM 提供商设置。
 
 ## 技术栈
 
@@ -11,6 +11,7 @@
 - aioboto3 + MinIO（S3 兼容）
 - PyMuPDF + PaddleOCR + python-docx
 - OpenAI 兼容结构化输出接口
+- 数据库动态管理多个 LLM 提供商，保留 `.env` 回退配置
 - PostgreSQL 结构化资质知识库与规则匹配
 - LangGraph + PostgreSQL checkpoint
 
@@ -49,7 +50,7 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-必填配置包括 PostgreSQL、Redis、MinIO 和 LLM 连接信息。`MINIO_ENDPOINT` 只填写 `host:port`，协议由 `MINIO_SECURE` 控制。LLM 使用 OpenAI 兼容接口：
+必填配置包括 PostgreSQL、Redis 和 MinIO。`MINIO_ENDPOINT` 只填写 `host:port`，协议由 `MINIO_SECURE` 控制。LLM 可继续使用 OpenAI 兼容的 `.env` 回退配置：
 
 ```dotenv
 LLM_API_KEY=你的密钥
@@ -57,7 +58,7 @@ LLM_BASE_URL=https://你的服务地址/v1
 LLM_MODEL_NAME=模型名称
 ```
 
-使用 OpenAI 官方接口时可将 `LLM_BASE_URL` 留空。未配置 `LLM_API_KEY` 不影响服务启动，但调用解析接口会返回明确的配置错误。
+使用 OpenAI 官方接口时可将 `LLM_BASE_URL` 留空。也可以不在 `.env` 中保存 LLM 密钥，改为启动后通过设置 API 新增提供商。实际生效优先级为：**数据库中启用的默认提供商 > `.env` 的 `LLM_*` 配置**。两处都未配置 API Key 不影响服务启动，但调用解析接口会返回明确错误。
 
 ## 启动
 
@@ -75,7 +76,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 启动时 lifespan 会执行以下操作：
 
-1. 连接 PostgreSQL，并通过 `Base.metadata.create_all()` 创建任务、解析结果、资质知识库、匹配结果和 Agent 运行表。
+1. 连接 PostgreSQL，并通过 `Base.metadata.create_all()` 创建任务、解析结果、资质知识库、匹配结果、Agent 运行表和 `llm_providers` 表。
 2. 建立并检查 Redis 连接；Redis 不可用时以降级模式继续启动。
 3. 检查 MinIO bucket，不存在时自动创建。
 4. 初始化 LangGraph PostgreSQL checkpoint 表和连接。
@@ -132,8 +133,52 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | GET | `/api/v1/tasks/{task_id}/agent/status` | 查询 Agent 当前步骤、摘要和错误信息 |
 | POST | `/api/v1/tasks/{task_id}/agent/confirm` | 确认解析结果，继续执行资质匹配 |
 | POST | `/api/v1/tasks/{task_id}/agent/cancel` | 取消正在等待确认的 Agent 流程 |
+| GET/POST | `/api/v1/settings/llm/providers` | 查询或新增 LLM 提供商 |
+| GET/PUT/DELETE | `/api/v1/settings/llm/providers/{id}` | 提供商详情、更新、删除 |
+| POST | `/api/v1/settings/llm/providers/{id}/set-default` | 设置默认提供商 |
+| GET | `/api/v1/settings/llm/current` | 查看当前实际生效的脱敏配置 |
+| POST | `/api/v1/settings/llm/models` | 使用待保存配置获取可用模型列表 |
+| POST | `/api/v1/settings/llm/test` | 使用选中模型发送最小请求并测试连接 |
 
 任务状态为：`created`、`parsing`、`analyzing`、`waiting_confirm`、`generating`、`completed`、`failed`。
+
+## 管理 LLM 提供商
+
+新增一个 OpenAI 兼容提供商。`api_key` 仅在写入时接收，所有查询响应都会脱敏：
+
+```powershell
+$provider = Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8000/api/v1/settings/llm/providers `
+  -ContentType application/json `
+  -Body '{"name":"示例提供商","provider_type":"openai_compatible","base_url":"https://api.example.com/v1","api_key":"替换为真实密钥","default_model":"模型名称","timeout_seconds":120,"is_enabled":true,"extra_config":{}}'
+```
+
+将该提供商设为全局默认：
+
+```powershell
+$providerId = $provider.data.id
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8000/api/v1/settings/llm/providers/$providerId/set-default"
+```
+
+查看解析 Skill 当前实际会使用的配置来源：
+
+```powershell
+Invoke-RestMethod -Method Get `
+  -Uri http://localhost:8000/api/v1/settings/llm/current
+```
+
+更新时不传 `api_key`、传空字符串或回传接口给出的脱敏值，都会保留原密钥。当前默认提供商不能直接删除，应先设置另一个默认项；禁用当前默认项会自动取消默认并回退到 `.env`。`extra_config` 可保存 `temperature`、`top_p` 等扩展参数。
+
+设置页面可先填写服务地址和 API Key，再获取该 OpenAI 兼容服务公开的模型列表。模型下拉框仍允许手动输入，以兼容未实现 `/models` 的提供商。选中模型后可执行连接测试；后端会使用同一个 `chat.completions` 调用路径发送最小请求。编辑已有提供商时，模型获取和连接测试可以复用数据库中保存的密钥，无需重新填写。
+
+开发环境无需手写迁移：重启应用后 lifespan 中的 `create_all()` 会创建新表。生产环境已有正式迁移流程时，应将 `llm_providers` 表及 `uq_llm_providers_single_default` 部分唯一索引纳入 Alembic 迁移。
+
+相关单元测试可在 `backend` 目录运行：
+
+```powershell
+python -m unittest discover -s tests -v
+```
 
 ## 调用示例
 
@@ -298,3 +343,4 @@ Invoke-RestMethod -Method Post `
 - 当前只解析 PDF 和 DOCX。
 - Agent 当前是单任务固定流程，不包含多 Agent、ReAct、RAG、报告生成、经分表生成或高并发任务队列。
 - 解析和匹配节点目前随接口同步执行；人工确认节点使用 LangGraph `interrupt`，checkpoint 和业务状态均持久化到 PostgreSQL。
+- LLM 提供商目前只开放 `openai_compatible` 类型；基础设施连接配置仍只从 `.env` 读取。

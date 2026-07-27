@@ -1,4 +1,5 @@
 from app.models.agent_run import AgentRun, AgentRunStatus, AgentStep
+from app.models.llm_provider import LLMProvider
 from app.models.match_result import MatchResultStatus, TaskMatchResult
 from app.models.parse_result import ParseResultStatus, TaskParseResult
 from app.models.qualification import (
@@ -16,6 +17,7 @@ __all__ = [
     "AgentStep",
     "CertificateStatus",
     "CompanyProfile",
+    "LLMProvider",
     "MatchResultStatus",
     "ParseResultStatus",
     "PerformanceRecord",

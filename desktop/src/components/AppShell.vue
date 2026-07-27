@@ -6,6 +6,7 @@ import {
   DocumentChecked,
   Files,
   Plus,
+  SetUp,
   Setting,
 } from '@element-plus/icons-vue'
 import BackendSettingsDialog from './BackendSettingsDialog.vue'
@@ -16,7 +17,11 @@ const router = useRouter()
 const settings = useSettingsStore()
 const settingsVisible = ref(false)
 
-const activeMenu = computed(() => route.path.startsWith('/tasks/new') ? '/tasks/new' : '/')
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/settings')) return '/settings'
+  if (route.path.startsWith('/tasks/new')) return '/tasks/new'
+  return '/'
+})
 const connectionLabel = computed(() => {
   if (settings.checking) return '正在检测'
   if (settings.isHealthy) return '服务正常'
@@ -62,6 +67,17 @@ function navigate(path: string): void {
         >
           <el-icon><Plus /></el-icon>
           <span>新建任务</span>
+        </button>
+
+        <span class="nav-label nav-label-secondary">配置</span>
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: activeMenu === '/settings' }"
+          @click="navigate('/settings')"
+        >
+          <el-icon><SetUp /></el-icon>
+          <span>系统设置</span>
         </button>
       </nav>
 
@@ -156,6 +172,10 @@ function navigate(path: string): void {
   color: var(--text-tertiary);
   font-size: 11px;
   font-weight: 600;
+}
+
+.nav-label-secondary {
+  margin-top: 20px;
 }
 
 .nav-item {

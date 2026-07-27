@@ -21,6 +21,12 @@ const router = createRouter({
       component: () => import('@/views/TaskDetailView.vue'),
       meta: { title: '任务详情' },
     },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('@/views/SettingsView.vue'),
+      meta: { title: '系统设置' },
+    },
   ],
 })
 

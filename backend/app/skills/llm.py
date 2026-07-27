@@ -1,5 +1,6 @@
 import json
 import logging
+from contextlib import suppress
 from typing import Any
 
 from openai import (
@@ -14,9 +15,9 @@ from openai import (
 )
 from pydantic import ValidationError
 
-from app.core.config import settings
 from app.core.exceptions import AppException
 from app.schemas.skills.parse import ParseResult
+from app.services.llm_provider_service import LLMRuntimeConfig, get_current_llm_config
 
 
 logger = logging.getLogger(__name__)
@@ -33,23 +34,22 @@ confidence 为 0 到 1，表示结果受原文清晰度支持的整体置信度�
 class TenderLLMClient:
     """OpenAI 兼容结构化输出客户端。"""
 
-    def __init__(self) -> None:
-        if settings.llm_api_key is None:
+    async def extract(self, tender_text: str) -> ParseResult:
+        config = await get_current_llm_config()
+        if not config.api_key:
             raise AppException(
-                "未配置 LLM_API_KEY，无法执行标书结构化解析",
+                "未配置可用的大模型 API Key，请新增默认提供商或配置 LLM_API_KEY",
                 code=50301,
                 status_code=503,
             )
 
         options: dict[str, Any] = {
-            "api_key": settings.llm_api_key.get_secret_value(),
-            "timeout": settings.llm_timeout_seconds,
+            "api_key": config.api_key,
+            "timeout": config.timeout_seconds,
         }
-        if settings.llm_base_url:
-            options["base_url"] = settings.llm_base_url
-        self._client = AsyncOpenAI(**options)
-
-    async def extract(self, tender_text: str) -> ParseResult:
+        if config.base_url:
+            options["base_url"] = config.base_url
+        client = AsyncOpenAI(**options)
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -58,10 +58,11 @@ class TenderLLMClient:
             },
         ]
         schema = ParseResult.model_json_schema()
+        completion_options = _completion_options(config)
         try:
             try:
-                response = await self._client.chat.completions.create(
-                    model=settings.llm_model_name,
+                response = await client.chat.completions.create(
+                    model=config.default_model,
                     messages=messages,
                     response_format={
                         "type": "json_schema",
@@ -73,6 +74,7 @@ class TenderLLMClient:
                             "schema": schema,
                         },
                     },
+                    **completion_options,
                 )
             except BadRequestError as exc:
                 # 部分 OpenAI 兼容服务只实现 JSON Mode，仍以 Pydantic 做最终强校验。
@@ -80,14 +82,15 @@ class TenderLLMClient:
                     "当前 LLM 不支持 JSON Schema，降级使用 JSON Mode：%s",
                     exc,
                 )
-                response = await self._client.chat.completions.create(
-                    model=settings.llm_model_name,
+                response = await client.chat.completions.create(
+                    model=config.default_model,
                     messages=messages,
                     response_format={"type": "json_object"},
+                    **completion_options,
                 )
         except AuthenticationError as exc:
             raise AppException(
-                "大模型鉴权失败，请检查 LLM_API_KEY",
+                "大模型鉴权失败，请检查当前提供商的 API Key",
                 code=50213,
                 status_code=502,
             ) from exc
@@ -111,7 +114,7 @@ class TenderLLMClient:
             ) from exc
         except APIConnectionError as exc:
             raise AppException(
-                "无法连接大模型服务，请检查 LLM_BASE_URL 和网络",
+                "无法连接大模型服务，请检查当前提供商地址和网络",
                 code=50216,
                 status_code=502,
             ) from exc
@@ -121,6 +124,9 @@ class TenderLLMClient:
                 code=50217,
                 status_code=502,
             ) from exc
+        finally:
+            with suppress(Exception):
+                await client.close()
 
         content = response.choices[0].message.content if response.choices else None
         if not content:
@@ -147,3 +153,21 @@ def _strip_json_fence(content: str) -> str:
         lines = stripped.splitlines()
         return "\n".join(lines[1:-1]).strip()
     return stripped
+
+
+def _completion_options(config: LLMRuntimeConfig) -> dict[str, Any]:
+    """只向 OpenAI SDK 传递明确允许的扩展参数。"""
+
+    allowed_keys = {
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "frequency_penalty",
+        "presence_penalty",
+        "seed",
+    }
+    return {
+        key: value
+        for key, value in config.extra_config.items()
+        if key in allowed_keys and value is not None
+    }
