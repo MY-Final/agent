@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
+  Collection,
   Connection,
   DocumentChecked,
   Files,
@@ -19,6 +20,7 @@ const settingsVisible = ref(false)
 
 const activeMenu = computed(() => {
   if (route.path.startsWith('/settings')) return '/settings'
+  if (route.path.startsWith('/templates')) return '/templates'
   if (route.path.startsWith('/tasks/new')) return '/tasks/new'
   return '/'
 })
@@ -70,6 +72,15 @@ function navigate(path: string): void {
         </button>
 
         <span class="nav-label nav-label-secondary">配置</span>
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: activeMenu === '/templates' }"
+          @click="navigate('/templates')"
+        >
+          <el-icon><Collection /></el-icon>
+          <span>解析模板</span>
+        </button>
         <button
           type="button"
           class="nav-item"

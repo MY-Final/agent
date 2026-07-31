@@ -16,6 +16,19 @@ class AgentConfirmInput(BaseModel):
     )
 
 
+class AgentRejectInput(BaseModel):
+    parse_result_id: uuid.UUID
+    reason: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="驳回原因，会记录在历史版本上",
+    )
+    template_id: uuid.UUID | None = Field(
+        default=None,
+        description="重新解析使用的模板；显式传 null 表示清除任务模板、跟随默认",
+    )
+
+
 class AgentParseSummary(BaseModel):
     project_name: str | None = None
     project_code: str | None = None
@@ -52,4 +65,3 @@ class AgentStatusRead(BaseModel):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
-

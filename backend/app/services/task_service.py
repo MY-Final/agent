@@ -2,7 +2,7 @@ import math
 import logging
 import uuid
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -10,6 +10,7 @@ from app.core.exceptions import NotFoundException, StorageException
 from app.core.minio import MinIOStorage
 from app.models.task import Task, TaskFile, TaskStatus
 from app.schemas.task import TaskCreate, TaskListData, TaskListItem, TaskUpdate
+from app.services.template_service import TemplateService
 
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 class TaskService:
     @staticmethod
     async def create(session: AsyncSession, payload: TaskCreate) -> Task:
+        if payload.parse_template_id is not None:
+            await TemplateService.ensure_exists(session, payload.parse_template_id)
         task = Task(**payload.model_dump())
         session.add(task)
         await session.commit()
@@ -28,10 +31,19 @@ class TaskService:
         session: AsyncSession,
         *,
         status: TaskStatus | None,
+        keyword: str | None,
         page: int,
         page_size: int,
     ) -> TaskListData:
         filters = [Task.status == status] if status is not None else []
+        if keyword and keyword.strip():
+            pattern = f"%{keyword.strip()}%"
+            filters.append(
+                or_(
+                    Task.project_name.ilike(pattern),
+                    Task.remark.ilike(pattern),
+                )
+            )
         count_statement = select(func.count(Task.id)).where(*filters)
         total = int((await session.scalar(count_statement)) or 0)
 
@@ -87,7 +99,10 @@ class TaskService:
         payload: TaskUpdate,
     ) -> Task:
         task = await TaskService.get(session, task_id)
-        for field, value in payload.model_dump(exclude_unset=True).items():
+        data = payload.model_dump(exclude_unset=True)
+        if data.get("parse_template_id") is not None:
+            await TemplateService.ensure_exists(session, data["parse_template_id"])
+        for field, value in data.items():
             setattr(task, field, value)
 
         await session.commit()

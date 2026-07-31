@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.parse_template import ParseTemplate
 
 
 class TaskStatus(str, enum.Enum):
@@ -28,6 +29,12 @@ class Task(Base):
     project_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    parse_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("parse_templates.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     status: Mapped[TaskStatus] = mapped_column(
         Enum(
             TaskStatus,
@@ -74,6 +81,7 @@ class Task(Base):
         passive_deletes=True,
         lazy="raise",
     )
+    parse_template: Mapped[ParseTemplate | None] = relationship()
 
 
 class TaskFile(Base):

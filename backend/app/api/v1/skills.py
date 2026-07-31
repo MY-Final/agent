@@ -62,6 +62,21 @@ async def get_parse_result(
     return success_response(ParseResultRead.from_orm_record(record))
 
 
+@router.get(
+    "/tasks/{task_id}/parse-results",
+    response_model=ApiResponse[list[ParseResultRead]],
+    summary="获取任务解析历史（多模板版本共存）",
+)
+async def list_parse_results(
+    task_id: uuid.UUID,
+    session: SessionDep,
+) -> ApiResponse[list[ParseResultRead]]:
+    records = await ParseService.list_results(session, task_id)
+    return success_response(
+        [ParseResultRead.from_orm_record(record) for record in records]
+    )
+
+
 @router.post(
     "/skills/match",
     response_model=ApiResponse[MatchResultRead],

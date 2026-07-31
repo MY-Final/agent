@@ -4,7 +4,7 @@ from fastapi import APIRouter
 
 from app.agent.service import AgentService
 from app.core.response import ApiResponse, success_response
-from app.schemas.agent import AgentConfirmInput, AgentStatusRead
+from app.schemas.agent import AgentConfirmInput, AgentRejectInput, AgentStatusRead
 
 
 router = APIRouter(tags=["任务分析 Agent"])
@@ -63,3 +63,21 @@ async def confirm_agent(
 async def cancel_agent(task_id: uuid.UUID) -> ApiResponse[AgentStatusRead]:
     result = await AgentService.cancel(task_id)
     return success_response(result, msg="Agent 流程已取消")
+
+
+@router.post(
+    "/tasks/{task_id}/agent/reject-and-reparse",
+    response_model=ApiResponse[AgentStatusRead],
+    summary="驳回解析结果并立即重新解析",
+)
+async def reject_and_reparse_agent(
+    task_id: uuid.UUID,
+    payload: AgentRejectInput,
+) -> ApiResponse[AgentStatusRead]:
+    result = await AgentService.reject_and_reparse(task_id, payload)
+    message = (
+        "已驳回原解析结果并开始重新解析"
+        if result.status.value != "failed"
+        else "重新解析启动失败，请查看错误信息"
+    )
+    return success_response(result, msg=message)

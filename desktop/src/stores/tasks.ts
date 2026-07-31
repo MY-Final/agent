@@ -8,10 +8,15 @@ export const useTasksStore = defineStore('tasks', () => {
   const total = ref(0)
   const loading = ref(false)
 
-  async function fetchTasks(status?: TaskStatus): Promise<void> {
+  async function fetchTasks(status?: TaskStatus, keyword?: string): Promise<void> {
     loading.value = true
     try {
-      const result = await taskApi.list({ page: 1, page_size: 100, status })
+      const result = await taskApi.list({
+        page: 1,
+        page_size: 100,
+        status,
+        keyword: keyword?.trim() || undefined,
+      })
       items.value = result.items
       total.value = result.total
     } finally {

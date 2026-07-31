@@ -13,6 +13,7 @@ import { formatDate } from '@/utils/format'
 const router = useRouter()
 const tasksStore = useTasksStore()
 const statusFilter = ref<TaskStatus | ''>('')
+const keyword = ref('')
 const deletingId = ref<string | null>(null)
 
 const statusOptions: Array<{ value: TaskStatus; label: string }> = [
@@ -26,7 +27,7 @@ const statusOptions: Array<{ value: TaskStatus; label: string }> = [
 
 async function loadTasks(showMessage = false): Promise<void> {
   try {
-    await tasksStore.fetchTasks(statusFilter.value || undefined)
+    await tasksStore.fetchTasks(statusFilter.value || undefined, keyword.value)
     if (showMessage) ElMessage.success('任务列表已刷新')
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
@@ -74,6 +75,16 @@ onMounted(() => loadTasks())
       </div>
       <div class="overview-separator" />
       <p>最近创建和更新的任务会显示在列表前部。</p>
+      <el-input
+        v-model="keyword"
+        class="keyword-search"
+        :prefix-icon="Search"
+        placeholder="搜索项目名称或备注"
+        clearable
+        @keyup.enter="loadTasks()"
+        @change="loadTasks()"
+        @clear="loadTasks()"
+      />
       <el-select
         v-model="statusFilter"
         placeholder="全部状态"
@@ -181,6 +192,10 @@ onMounted(() => loadTasks())
 
 .status-filter {
   width: 150px;
+}
+
+.keyword-search {
+  width: 260px;
 }
 
 .table-surface {

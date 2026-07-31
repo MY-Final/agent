@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +39,22 @@ class TaskParseResult(Base):
         index=True,
     )
     source_object_keys: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    template_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("parse_templates.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    template_version: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=True
+    )
+    is_rejected: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    reject_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[ParseResultStatus] = mapped_column(
         Enum(

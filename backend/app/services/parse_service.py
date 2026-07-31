@@ -11,7 +11,8 @@ from app.core.exceptions import AppException, NotFoundException, StorageExceptio
 from app.core.minio import MinIOStorage
 from app.models.parse_result import ParseResultStatus, TaskParseResult
 from app.models.task import Task, TaskFile, TaskStatus
-from app.schemas.skills.parse import ParseInput
+from app.schemas.skills.parse import ParseInput, ParseTemplate
+from app.services.template_service import TemplateService
 from app.skills.parse_tender import ParseTenderSkill, TenderDocument
 from app.skills.text_extractor import TextExtractor
 
@@ -38,12 +39,15 @@ class ParseService:
             return await ParseService.parse_task(session, storage, payload.task_id)
 
         source = await ParseService._resolve_single_source(session, payload)
+        template, template_id = await TemplateService.resolve_parse_template(session)
         return await ParseService._execute(
             session=session,
             storage=storage,
             sources=[source],
             task_id=source.task_id,
             file_id=source.file_id,
+            template=template,
+            template_id=template_id,
             update_task_status=source.task_id is not None,
         )
 
@@ -53,7 +57,11 @@ class ParseService:
         storage: MinIOStorage,
         task_id: uuid.UUID,
     ) -> TaskParseResult:
-        await ParseService._get_task(session, task_id)
+        task = await ParseService._get_task(session, task_id)
+        template, template_id = await TemplateService.resolve_parse_template(
+            session,
+            task.parse_template_id,
+        )
         statement = (
             select(TaskFile)
             .where(TaskFile.task_id == task_id)
@@ -76,6 +84,8 @@ class ParseService:
             sources=sources,
             task_id=task_id,
             file_id=sources[0].file_id if len(sources) == 1 else None,
+            template=template,
+            template_id=template_id,
             update_task_status=True,
         )
 
@@ -97,6 +107,21 @@ class ParseService:
         return record
 
     @staticmethod
+    async def list_results(
+        session: AsyncSession,
+        task_id: uuid.UUID,
+    ) -> list[TaskParseResult]:
+        """按时间倒序返回任务的全部解析历史，支持多模板版本共存与追溯。"""
+
+        await ParseService._get_task(session, task_id)
+        statement = (
+            select(TaskParseResult)
+            .where(TaskParseResult.task_id == task_id)
+            .order_by(TaskParseResult.created_at.desc(), TaskParseResult.id.desc())
+        )
+        return list((await session.scalars(statement)).all())
+
+    @staticmethod
     async def _execute(
         *,
         session: AsyncSession,
@@ -104,6 +129,8 @@ class ParseService:
         sources: list[ParseSource],
         task_id: uuid.UUID | None,
         file_id: uuid.UUID | None,
+        template: ParseTemplate,
+        template_id: uuid.UUID | None,
         update_task_status: bool,
     ) -> TaskParseResult:
         source_keys = [source.object_key for source in sources]
@@ -119,12 +146,14 @@ class ParseService:
                     sources,
                     Path(temp_dir),
                 )
-                result = await ParseTenderSkill().run(documents)
+                result = await ParseTenderSkill().run(documents, template=template)
 
             record = TaskParseResult(
                 task_id=task_id,
                 file_id=file_id,
                 source_object_keys=source_keys,
+                template_id=template_id,
+                template_version=template.version,
                 result_json=result.model_dump(mode="json"),
                 status=ParseResultStatus.SUCCESS,
                 error_message=None,
@@ -147,6 +176,8 @@ class ParseService:
                 task_id=task_id,
                 file_id=file_id,
                 source_object_keys=source_keys,
+                template_id=template_id,
+                template_version=template.version,
                 result_json=None,
                 status=ParseResultStatus.FAILED,
                 error_message=error_message,

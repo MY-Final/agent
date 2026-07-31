@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.schemas.skills.parse import ParseResult
+from app.schemas.skills.parse import ParseResult, ParseTemplate
 from app.skills.llm import TenderLLMClient
+from app.skills.parse_template import SEED_PARSE_TEMPLATE
 from app.skills.text_extractor import TextExtractor
 
 
@@ -24,7 +25,11 @@ class ParseTenderSkill:
         self._text_extractor = text_extractor or TextExtractor()
         self._llm_client = llm_client
 
-    async def run(self, documents: list[TenderDocument]) -> ParseResult:
+    async def run(
+        self,
+        documents: list[TenderDocument],
+        template: ParseTemplate = SEED_PARSE_TEMPLATE,
+    ) -> ParseResult:
         if not documents:
             raise ValueError("没有可解析的标书文件")
 
@@ -42,4 +47,4 @@ class ParseTenderSkill:
             )
 
         llm_client = self._llm_client or TenderLLMClient()
-        return await llm_client.extract("\n\n".join(sections))
+        return await llm_client.extract("\n\n".join(sections), template)

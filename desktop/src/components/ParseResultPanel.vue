@@ -1,153 +1,216 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Document, WarningFilled } from '@element-plus/icons-vue'
+import { computed, ref, watch } from 'vue'
+import { Document, Files } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import ParseResultCompare from '@/components/ParseResultCompare.vue'
+import ResultViewer from '@/components/ResultViewer.vue'
 import type { ParseResultRecord } from '@/types/results'
-import { formatDate, formatValue } from '@/utils/format'
+import { formatDate } from '@/utils/format'
+
+type ViewMode = 'single' | 'compare'
+
+const MAX_COMPARE_COUNT = 4
 
 const props = defineProps<{
   record: ParseResultRecord | null
   loading?: boolean
+  history?: ParseResultRecord[]
 }>()
 
-const result = computed(() => props.record?.result ?? null)
-const scoreEntries = computed(() => Object.entries(result.value?.scoring_method ?? {}))
-const dateEntries = computed(() => Object.entries(result.value?.key_dates ?? {}))
+const mode = ref<ViewMode>('single')
+const selectedId = ref<string | null>(props.record?.id ?? null)
+const compareSelectedIds = ref<string[]>([])
+
+watch(
+  () => props.record?.id,
+  (id) => {
+    selectedId.value = id ?? null
+  },
+)
+
+watch(
+  () => props.history,
+  (history) => {
+    if (!history?.length) {
+      compareSelectedIds.value = []
+      return
+    }
+    const valid = history
+      .filter((item) => compareSelectedIds.value.includes(item.id))
+      .map((item) => item.id)
+    compareSelectedIds.value = valid.length >= 2 ? valid : history.slice(0, 2).map((item) => item.id)
+  },
+)
+
+const displayedRecord = computed<ParseResultRecord | null>(() => {
+  if (!props.history?.length) return props.record
+  return props.history.find((item) => item.id === selectedId.value) ?? props.record
+})
+
+const compareRecords = computed<ParseResultRecord[]>(() => {
+  if (!props.history) return []
+  return props.history.filter((item) => compareSelectedIds.value.includes(item.id))
+})
+
+const result = computed(() => displayedRecord.value?.result ?? null)
+const generatedAt = computed(() => formatDate(displayedRecord.value?.created_at))
+
+function isLatest(item: ParseResultRecord): boolean {
+  return props.history?.[0]?.id === item.id
+}
+
+function versionLabel(item: ParseResultRecord): string {
+  return `${item.template_version ?? '内置模板'} · ${formatDate(item.created_at)}`
+}
+
+function pillState(item: ParseResultRecord): 'latest' | 'rejected' | 'failed' | 'normal' {
+  if (item.status === 'failed') return 'failed'
+  if (item.is_rejected) return 'rejected'
+  if (isLatest(item)) return 'latest'
+  return 'normal'
+}
+
+function pillLabel(item: ParseResultRecord): string {
+  const time = item.created_at.slice(11, 16)
+  return `v${item.template_version ?? '?'} · ${time}`
+}
+
+function pillClass(item: ParseResultRecord): string {
+  const state = pillState(item)
+  const active = mode.value === 'single'
+    ? selectedId.value === item.id
+    : compareSelectedIds.value.includes(item.id)
+  return active ? `${state} active` : state
+}
+
+function pillTitle(item: ParseResultRecord): string {
+  const status = pillState(item)
+  const statusLabel = {
+    latest: '最新',
+    rejected: '已驳回',
+    failed: '解析失败',
+    normal: '历史版本',
+  }[status]
+  const parts = [versionLabel(item), statusLabel]
+  if (item.is_rejected && item.reject_reason) {
+    parts.push(`原因：${item.reject_reason}`)
+  }
+  return parts.join(' · ')
+}
+
+function toggleVersion(item: ParseResultRecord): void {
+  if (mode.value === 'single') {
+    selectedId.value = item.id
+    return
+  }
+  const index = compareSelectedIds.value.indexOf(item.id)
+  if (index >= 0) {
+    compareSelectedIds.value = compareSelectedIds.value.filter((id) => id !== item.id)
+    return
+  }
+  if (compareSelectedIds.value.length >= MAX_COMPARE_COUNT) {
+    ElMessage.warning(`最多同时对比 ${MAX_COMPARE_COUNT} 个版本`)
+    return
+  }
+  compareSelectedIds.value = [...compareSelectedIds.value, item.id]
+}
+
+function switchMode(next: ViewMode): void {
+  mode.value = next
+}
 </script>
 
 <template>
   <div v-loading="loading" class="result-panel">
-    <template v-if="record?.status === 'failed'">
+    <div v-if="history && history.length" class="version-toolbar">
+      <div class="version-pills" role="tablist" aria-label="解析版本">
+        <button
+          v-for="item in history"
+          :key="item.id"
+          type="button"
+          class="version-pill"
+          :class="pillClass(item)"
+          :title="pillTitle(item)"
+          @click="toggleVersion(item)"
+        >
+          <span class="pill-dot" aria-hidden="true" />
+          <span class="pill-text">{{ pillLabel(item) }}</span>
+        </button>
+      </div>
+      <div class="mode-segment" role="tablist" aria-label="查看模式">
+        <button
+          type="button"
+          :class="{ active: mode === 'single' }"
+          @click="switchMode('single')"
+        >
+          <el-icon><Document /></el-icon>
+          <span>单版本</span>
+        </button>
+        <button
+          type="button"
+          :class="{ active: mode === 'compare' }"
+          :disabled="history.length < 2"
+          @click="switchMode('compare')"
+        >
+          <el-icon><Files /></el-icon>
+          <span>对比</span>
+        </button>
+      </div>
+    </div>
+
+    <template v-if="mode === 'single'">
       <el-alert
+        v-if="displayedRecord?.is_rejected && displayedRecord.status === 'success'"
+        class="rejected-banner"
+        title="该解析结果已被驳回"
+        :description="displayedRecord.reject_reason || '未填写驳回原因'"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+
+      <el-alert
+        v-else-if="displayedRecord?.is_rejected && displayedRecord.status === 'failed'"
+        class="rejected-banner"
+        title="该解析结果已被驳回（解析本身失败）"
+        :description="displayedRecord.reject_reason || displayedRecord.error_message || '未填写驳回原因'"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+
+      <el-alert
+        v-if="displayedRecord?.status === 'failed' && !displayedRecord.is_rejected"
         title="解析失败"
-        :description="record.error_message || '未记录具体错误，请查看后端日志。'"
+        :description="displayedRecord.error_message || '未记录具体错误，请查看后端日志。'"
         type="error"
         :closable="false"
         show-icon
       />
+
+      <ResultViewer
+        v-if="displayedRecord?.status === 'success' && result"
+        :template="result.template"
+        :data="result.data"
+        :summary="result.raw_summary"
+        :confidence="result.confidence"
+        :generated-at="generatedAt"
+      />
+
+      <div v-if="!displayedRecord" class="empty-block">
+        <el-empty description="启动分析后，这里将展示结构化解析结果" :image-size="88" />
+      </div>
     </template>
 
-    <template v-else-if="result">
-      <section class="result-section overview-section">
-        <div class="section-heading">
-          <div>
-            <h3 class="section-title">项目概览</h3>
-            <p class="section-subtitle">结构化结果生成于 {{ formatDate(record?.created_at) }}</p>
-          </div>
-          <el-tag v-if="result.confidence !== null" type="success" effect="plain">
-            置信度 {{ Math.round(result.confidence * 100) }}%
-          </el-tag>
-        </div>
-        <el-descriptions :column="3" border class="overview-descriptions">
-          <el-descriptions-item label="项目名称">{{ result.project_name || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="项目编号">{{ result.project_code || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="采购人">{{ result.purchaser || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="预算金额">{{ result.budget || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="项目地点">{{ result.location || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="项目工期">{{ result.duration || '-' }}</el-descriptions-item>
-        </el-descriptions>
-        <div v-if="result.raw_summary" class="summary-copy">
-          <el-icon><Document /></el-icon>
-          <p>{{ result.raw_summary }}</p>
-        </div>
-      </section>
-
-      <section class="result-section">
-        <div class="section-heading">
-          <div>
-            <h3 class="section-title">资格要求</h3>
-            <p class="section-subtitle">共提取 {{ result.qualifications.length }} 条要求</p>
-          </div>
-        </div>
-        <el-table v-if="result.qualifications.length" :data="result.qualifications" stripe>
-          <el-table-column prop="category" label="类别" width="110" />
-          <el-table-column label="要求" min-width="320">
-            <template #default="scope">
-              <div class="requirement-cell">
-                <span>{{ scope.row.description }}</span>
-                <small v-if="scope.row.original_text">原文：{{ scope.row.original_text }}</small>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="性质" width="100" align="center">
-            <template #default="scope">
-              <el-tag :type="scope.row.is_mandatory ? 'danger' : 'info'" effect="plain" size="small">
-                {{ scope.row.is_mandatory ? '强制' : '一般' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-        </el-table>
-        <el-empty v-else description="未提取到资格要求" :image-size="72" />
-      </section>
-
-      <section class="result-section split-section">
-        <div class="split-column">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">评分办法</h3>
-              <p class="section-subtitle">商务、技术和价格等评分信息</p>
-            </div>
-          </div>
-          <div v-if="scoreEntries.length" class="key-value-list">
-            <div v-for="([key, value]) in scoreEntries" :key="key" class="key-value-row">
-              <span>{{ key }}</span>
-              <strong>{{ formatValue(value) }}</strong>
-            </div>
-          </div>
-          <el-empty v-else description="暂无评分办法" :image-size="60" />
-        </div>
-
-        <div class="split-column">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">关键时间</h3>
-              <p class="section-subtitle">报名、投标截止和开标等节点</p>
-            </div>
-          </div>
-          <div v-if="dateEntries.length" class="key-value-list">
-            <div v-for="([key, value]) in dateEntries" :key="key" class="key-value-row">
-              <span>{{ key }}</span>
-              <strong>{{ formatValue(value) }}</strong>
-            </div>
-          </div>
-          <el-empty v-else description="暂无关键时间" :image-size="60" />
-        </div>
-      </section>
-
-      <section class="result-section split-section">
-        <div class="split-column">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">废标条款</h3>
-              <p class="section-subtitle">需要优先核验的否决条件</p>
-            </div>
-          </div>
-          <ul v-if="result.disqualification_items.length" class="point-list danger-list">
-            <li v-for="item in result.disqualification_items" :key="item">
-              <el-icon><WarningFilled /></el-icon>
-              <span>{{ item }}</span>
-            </li>
-          </ul>
-          <el-empty v-else description="未提取到废标条款" :image-size="60" />
-        </div>
-
-        <div class="split-column">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">其他要点</h3>
-              <p class="section-subtitle">值得关注的补充信息</p>
-            </div>
-          </div>
-          <ul v-if="result.other_key_points.length" class="point-list">
-            <li v-for="item in result.other_key_points" :key="item"><span>{{ item }}</span></li>
-          </ul>
-          <el-empty v-else description="暂无其他要点" :image-size="60" />
-        </div>
-      </section>
+    <template v-else>
+      <ParseResultCompare v-if="compareRecords.length >= 2" :records="compareRecords" />
+      <div v-else class="empty-block">
+        <el-empty
+          description="请至少选择两个版本进行对比"
+          :image-size="88"
+        />
+      </div>
     </template>
-
-    <div v-else class="empty-block">
-      <el-empty description="启动分析后，这里将展示结构化解析结果" :image-size="88" />
-    </div>
   </div>
 </template>
 
@@ -156,169 +219,152 @@ const dateEntries = computed(() => Object.entries(result.value?.key_dates ?? {})
   min-height: 360px;
 }
 
-.result-section {
-  padding: 24px;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.result-section:last-child {
-  border-bottom: 0;
-}
-
-.section-heading {
+.version-toolbar {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 16px;
+  align-items: center;
+  gap: 16px;
+  min-height: 46px;
+  padding: 8px 24px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--surface-color);
 }
 
-.overview-descriptions :deep(.el-descriptions__label) {
-  width: 100px;
+.version-pills {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.version-pill {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--surface-muted);
   color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.version-pill:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-strong);
+  color: var(--text-primary);
+}
+
+.version-pill.active {
+  border-color: var(--primary-color);
+  background: var(--primary-color);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.pill-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.version-pill.latest .pill-dot {
+  background: var(--success-color);
+}
+
+.version-pill.rejected .pill-dot {
+  background: var(--warning-color);
+}
+
+.version-pill.failed .pill-dot {
+  background: var(--danger-color);
+}
+
+.version-pill.active .pill-dot {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.pill-text {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-segment {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: var(--surface-strong);
+}
+
+.mode-segment button {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.mode-segment button .el-icon {
   font-size: 12px;
 }
 
-.overview-descriptions :deep(.el-descriptions__content) {
-  color: var(--text-primary);
-  font-weight: 500;
+.mode-segment button span {
+  font-size: 11px;
+  line-height: 1;
 }
 
-.summary-copy {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-top: 16px;
-  padding: 14px 16px;
-  border-left: 3px solid var(--primary-color);
-  background: var(--primary-soft);
+.mode-segment button:hover:not(:disabled):not(.active) {
   color: var(--text-secondary);
 }
 
-.summary-copy .el-icon {
-  flex: 0 0 auto;
-  margin-top: 3px;
-  color: var(--primary-color);
+.mode-segment button.active {
+  background: var(--surface-color);
+  color: var(--primary-dark);
+  box-shadow: 0 1px 2px rgba(31, 41, 36, 0.08);
+  font-weight: 600;
 }
 
-.summary-copy p {
+.mode-segment button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rejected-banner {
   margin: 0;
-  line-height: 1.75;
-}
-
-.requirement-cell span,
-.requirement-cell small {
-  display: block;
-}
-
-.requirement-cell span {
-  color: var(--text-primary);
-  line-height: 1.6;
-}
-
-.requirement-cell small {
-  margin-top: 5px;
-  color: var(--text-tertiary);
-  line-height: 1.5;
-}
-
-.split-section {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0;
-  padding: 0;
-}
-
-.split-column {
-  min-width: 0;
-  padding: 24px;
-}
-
-.split-column + .split-column {
-  border-left: 1px solid var(--border-color);
-}
-
-.key-value-list {
-  border-top: 1px solid var(--border-color);
-}
-
-.key-value-row {
-  display: grid;
-  grid-template-columns: minmax(100px, 0.42fr) minmax(0, 1fr);
-  gap: 16px;
-  padding: 11px 0;
+  border: 0;
   border-bottom: 1px solid var(--border-color);
-  font-size: 13px;
-  line-height: 1.6;
+  border-radius: 0;
 }
 
-.key-value-row span {
-  color: var(--text-tertiary);
-}
-
-.key-value-row strong {
-  color: var(--text-primary);
-  font-weight: 500;
-  text-align: right;
-  overflow-wrap: anywhere;
-}
-
-.point-list {
+.empty-block {
   display: grid;
-  gap: 9px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  min-height: 260px;
+  place-items: center;
 }
 
-.point-list li {
-  position: relative;
-  display: flex;
-  gap: 9px;
-  align-items: flex-start;
-  padding: 11px 12px 11px 28px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.point-list li::before {
-  position: absolute;
-  top: 18px;
-  left: 14px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--primary-color);
-  content: '';
-}
-
-.danger-list li {
-  padding-left: 12px;
-  border-color: #f2d0cc;
-  background: #fffafa;
-}
-
-.danger-list li::before {
-  display: none;
-}
-
-.danger-list .el-icon {
-  flex: 0 0 auto;
-  margin-top: 4px;
-  color: var(--danger-color);
-}
-
-@media (max-width: 1120px) {
-  .split-section {
-    grid-template-columns: 1fr;
-  }
-
-  .split-column + .split-column {
-    border-top: 1px solid var(--border-color);
-    border-left: 0;
+@media (max-width: 1100px) {
+  .version-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
   }
 }
 </style>

@@ -67,10 +67,33 @@ export const taskApi = {
       ...agentRequestConfig,
     }),
 
+  rejectAndReparse: (
+    taskId: string,
+    parseResultId: string,
+    reason?: string,
+    templateId?: string | null,
+  ) =>
+    request<AgentStatus>({
+      method: 'POST',
+      url: `/api/v1/tasks/${taskId}/agent/reject-and-reparse`,
+      data: {
+        parse_result_id: parseResultId,
+        reason: reason?.trim() || null,
+        template_id: templateId || null,
+      },
+      ...agentRequestConfig,
+    }),
+
   getParseResult: (taskId: string) =>
     request<ParseResultRecord>({
       method: 'GET',
       url: `/api/v1/tasks/${taskId}/parse-result`,
+    }),
+
+  listParseResults: (taskId: string) =>
+    request<ParseResultRecord[]>({
+      method: 'GET',
+      url: `/api/v1/tasks/${taskId}/parse-results`,
     }),
 
   getMatchResult: (taskId: string) =>

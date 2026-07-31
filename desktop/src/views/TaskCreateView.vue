@@ -1,19 +1,24 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, DocumentAdd, UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage, type FormInstance, type FormRules, type UploadFile, type UploadRawFile } from 'element-plus'
 import { getErrorMessage } from '@/api/client'
 import { taskApi } from '@/api/tasks'
+import { templateApi } from '@/api/templates'
+import type { ParseTemplateRecord } from '@/types/template'
 
 interface CreateForm {
   projectName: string
   remark: string
+  templateId: string
 }
 
 const router = useRouter()
 const formRef = ref<FormInstance>()
-const form = ref<CreateForm>({ projectName: '', remark: '' })
+const form = ref<CreateForm>({ projectName: '', remark: '', templateId: '' })
+const templates = ref<ParseTemplateRecord[]>([])
+const templatesLoading = ref(false)
 const selectedFile = ref<File | null>(null)
 const submitting = ref(false)
 
@@ -48,6 +53,19 @@ function clearFile(): void {
   selectedFile.value = null
 }
 
+async function loadTemplates(): Promise<void> {
+  templatesLoading.value = true
+  try {
+    templates.value = await templateApi.list()
+    const defaultTemplate = templates.value.find((item) => item.is_default)
+    form.value.templateId = defaultTemplate?.id ?? ''
+  } catch (error) {
+    ElMessage.error(`模板加载失败：${getErrorMessage(error)}`)
+  } finally {
+    templatesLoading.value = false
+  }
+}
+
 async function submit(): Promise<void> {
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
@@ -63,6 +81,7 @@ async function submit(): Promise<void> {
       project_name: form.value.projectName.trim(),
       remark: form.value.remark.trim() || null,
       source: 'desktop',
+      parse_template_id: form.value.templateId || null,
     })
     taskId = task.id
     await taskApi.uploadFile(task.id, selectedFile.value)
@@ -76,6 +95,10 @@ async function submit(): Promise<void> {
     submitting.value = false
   }
 }
+
+onMounted(() => {
+  void loadTemplates()
+})
 </script>
 
 <template>
@@ -101,6 +124,22 @@ async function submit(): Promise<void> {
         <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent>
           <el-form-item label="项目名称" prop="projectName">
             <el-input v-model="form.projectName" maxlength="255" show-word-limit placeholder="例如：某市数据中心建设项目" />
+          </el-form-item>
+          <el-form-item label="解析模板">
+            <el-select
+              v-model="form.templateId"
+              :loading="templatesLoading"
+              class="template-select"
+              placeholder="使用默认模板"
+            >
+              <el-option
+                v-for="template in templates"
+                :key="template.id"
+                :label="`${template.name}（${template.version}）`"
+                :value="template.id"
+              />
+            </el-select>
+            <div class="template-help">决定解析时提取哪些字段，可在「解析模板」页管理。</div>
           </el-form-item>
           <el-form-item label="备注（可选）">
             <el-input
@@ -236,6 +275,17 @@ async function submit(): Promise<void> {
 
 .upload-tip {
   margin-top: 10px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.template-select {
+  width: 100%;
+}
+
+.template-help {
+  margin-top: 6px;
   color: var(--text-tertiary);
   font-size: 11px;
   line-height: 1.6;

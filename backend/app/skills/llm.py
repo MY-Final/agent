@@ -16,8 +16,17 @@ from openai import (
 from pydantic import ValidationError
 
 from app.core.exceptions import AppException
-from app.schemas.skills.parse import ParseResult
+from app.schemas.parse_template import TemplateSuggestion
+from app.schemas.skills.parse import ParseResult, ParseTemplate
 from app.services.llm_provider_service import LLMRuntimeConfig, get_current_llm_config
+from app.skills.parse_template import (
+    SUGGEST_SYSTEM_PROMPT,
+    build_extraction_schema,
+    build_suggestion_prompt,
+    describe_template,
+    sanitize_sections,
+    with_core_contract,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -28,13 +37,15 @@ SYSTEM_PROMPT = """你是严谨的中文招标文件结构化抽取器。
 原文没有的信息必须返回 null、空数组或空对象。
 qualification.category 使用：资质、业绩、人员、财务、其他。
 confidence 为 0 到 1，表示结果受原文清晰度支持的整体置信度。
-输出必须严格符合给定 JSON Schema。"""
+输出必须严格符合给定 JSON Schema，data 中不得新增模板之外的键。"""
 
 
 class TenderLLMClient:
     """OpenAI 兼容结构化输出客户端。"""
 
-    async def extract(self, tender_text: str) -> ParseResult:
+    async def _make_client(
+        self,
+    ) -> tuple[LLMRuntimeConfig, AsyncOpenAI]:
         config = await get_current_llm_config()
         if not config.api_key:
             raise AppException(
@@ -50,14 +61,18 @@ class TenderLLMClient:
         if config.base_url:
             options["base_url"] = config.base_url
         client = AsyncOpenAI(**options)
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": "请从以下招标文件原文中提取结构化信息：\n\n" + tender_text,
-            },
-        ]
-        schema = ParseResult.model_json_schema()
+        return config, client
+
+    async def _request_content(
+        self,
+        config: LLMRuntimeConfig,
+        client: AsyncOpenAI,
+        messages: list[dict[str, str]],
+        schema_name: str,
+        schema: dict[str, Any],
+    ) -> str:
+        """发起结构化输出请求并统一映射上游错误，返回原始内容文本。"""
+
         completion_options = _completion_options(config)
         try:
             try:
@@ -67,9 +82,9 @@ class TenderLLMClient:
                     response_format={
                         "type": "json_schema",
                         "json_schema": {
-                            "name": "tender_parse_result",
-                            # scoring_method、key_dates 是动态字典，因此由 Pydantic
-                            # 做最终严格校验，不启用供应商侧 strict 子集限制。
+                            "name": schema_name,
+                            # 动态部分由 Pydantic 做最终严格校验，
+                            # 不启用供应商侧 strict 子集限制。
                             "strict": False,
                             "schema": schema,
                         },
@@ -124,9 +139,6 @@ class TenderLLMClient:
                 code=50217,
                 status_code=502,
             ) from exc
-        finally:
-            with suppress(Exception):
-                await client.close()
 
         content = response.choices[0].message.content if response.choices else None
         if not content:
@@ -135,16 +147,98 @@ class TenderLLMClient:
                 code=50211,
                 status_code=502,
             )
+        return content
+
+    async def extract(
+        self,
+        tender_text: str,
+        template: ParseTemplate,
+    ) -> ParseResult:
+        config, client = await self._make_client()
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "请从以下招标文件原文中提取结构化信息，严格按模板填写 data：\n\n"
+                    f"{describe_template(template)}\n\n"
+                    "原文：\n"
+                    + tender_text
+                ),
+            },
+        ]
+        schema = build_extraction_schema(template)
+        try:
+            content = await self._request_content(
+                config,
+                client,
+                messages,
+                "tender_parse_result",
+                schema,
+            )
+        finally:
+            with suppress(Exception):
+                await client.close()
 
         try:
             payload = json.loads(_strip_json_fence(content))
-            return ParseResult.model_validate(payload)
+            return ParseResult(
+                template=template,
+                data=payload.get("data") or {},
+                raw_summary=payload.get("raw_summary"),
+                confidence=payload.get("confidence"),
+            )
         except (json.JSONDecodeError, ValidationError) as exc:
             raise AppException(
                 "大模型返回内容未通过结构化结果校验",
                 code=50212,
                 status_code=502,
             ) from exc
+
+    async def suggest_template(
+        self,
+        description: str,
+        reference_text: str | None = None,
+    ) -> TemplateSuggestion:
+        """根据自然语言需求生成模板建议，人工确认后再落库。"""
+
+        config, client = await self._make_client()
+        messages = [
+            {"role": "system", "content": SUGGEST_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": build_suggestion_prompt(description, reference_text),
+            },
+        ]
+        schema = TemplateSuggestion.model_json_schema()
+        try:
+            content = await self._request_content(
+                config,
+                client,
+                messages,
+                "tender_template_suggestion",
+                schema,
+            )
+        finally:
+            with suppress(Exception):
+                await client.close()
+
+        try:
+            payload = json.loads(_strip_json_fence(content))
+            suggestion = TemplateSuggestion.model_validate(payload)
+        except (json.JSONDecodeError, ValidationError) as exc:
+            raise AppException(
+                "大模型返回的模板建议未通过校验",
+                code=50222,
+                status_code=502,
+            ) from exc
+        return suggestion.model_copy(
+            update={
+                "sections": with_core_contract(
+                    sanitize_sections(suggestion.sections)
+                )
+            }
+        )
 
 
 def _strip_json_fence(content: str) -> str:

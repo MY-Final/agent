@@ -10,12 +10,14 @@ class TaskCreate(BaseModel):
     project_name: str = Field(min_length=1, max_length=255)
     remark: str | None = None
     source: str | None = Field(default=None, max_length=255)
+    parse_template_id: uuid.UUID | None = None
 
 
 class TaskUpdate(BaseModel):
     project_name: str | None = Field(default=None, min_length=1, max_length=255)
     remark: str | None = None
     source: str | None = Field(default=None, max_length=255)
+    parse_template_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def reject_null_project_name(self) -> "TaskUpdate":
@@ -47,6 +49,7 @@ class TaskRead(BaseModel):
     project_name: str
     remark: str | None
     source: str | None
+    parse_template_id: uuid.UUID | None
     status: TaskStatus
     created_at: datetime
     updated_at: datetime

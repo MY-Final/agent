@@ -7,6 +7,7 @@ import {
   Download,
   Files,
   Refresh,
+  RefreshLeft,
   Upload,
   VideoPlay,
 } from '@element-plus/icons-vue'
@@ -15,6 +16,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { ElMessage, type UploadFile, type UploadRawFile } from 'element-plus'
 import { getErrorMessage, isNotFoundError } from '@/api/client'
 import { taskApi } from '@/api/tasks'
+import { templateApi } from '@/api/templates'
 import AgentProgressPanel from '@/components/AgentProgressPanel.vue'
 import MatchResultPanel from '@/components/MatchResultPanel.vue'
 import ParseResultPanel from '@/components/ParseResultPanel.vue'
@@ -22,6 +24,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import type { AgentStatus } from '@/types/agent'
 import type { MatchResultRecord, ParseResultRecord } from '@/types/results'
 import type { TaskDetail, TaskFile } from '@/types/task'
+import type { ParseTemplateRecord } from '@/types/template'
 import { formatDate, formatFileSize } from '@/utils/format'
 
 const route = useRoute()
@@ -31,6 +34,7 @@ const task = ref<TaskDetail | null>(null)
 const files = ref<TaskFile[]>([])
 const agentStatus = ref<AgentStatus | null>(null)
 const parseRecord = ref<ParseResultRecord | null>(null)
+const parseHistory = ref<ParseResultRecord[]>([])
 const matchRecord = ref<MatchResultRecord | null>(null)
 const activeTab = ref('files')
 const pageLoading = ref(false)
@@ -39,6 +43,11 @@ const agentActionLoading = ref(false)
 const uploadLoading = ref(false)
 const confirmDialogVisible = ref(false)
 const confirmationRemark = ref('')
+const rejectDialogVisible = ref(false)
+const rejectReason = ref('')
+const rejectTemplateId = ref('')
+const templates = ref<ParseTemplateRecord[]>([])
+const templatesLoading = ref(false)
 let pollTimer: number | null = null
 
 const isWaitingConfirm = computed(() =>
@@ -79,11 +88,13 @@ async function loadAgentStatus(): Promise<void> {
   }
 }
 
-async function loadParseResult(): Promise<void> {
+async function loadParseResults(): Promise<void> {
   try {
-    parseRecord.value = await taskApi.getParseResult(taskId.value)
+    parseHistory.value = await taskApi.listParseResults(taskId.value)
+    parseRecord.value = parseHistory.value[0] ?? null
   } catch (error) {
     if (isNotFoundError(error)) {
+      parseHistory.value = []
       parseRecord.value = null
       return
     }
@@ -103,10 +114,21 @@ async function loadMatchResult(): Promise<void> {
   }
 }
 
+async function loadTemplates(): Promise<void> {
+  templatesLoading.value = true
+  try {
+    templates.value = await templateApi.list()
+  } catch (error) {
+    ElMessage.error(`模板加载失败：${getErrorMessage(error)}`)
+  } finally {
+    templatesLoading.value = false
+  }
+}
+
 async function refreshAll(showMessage = false): Promise<void> {
   refreshing.value = true
   try {
-    await Promise.all([loadTask(), loadFiles(), loadAgentStatus(), loadParseResult(), loadMatchResult()])
+    await Promise.all([loadTask(), loadFiles(), loadAgentStatus(), loadParseResults(), loadMatchResult()])
     if (showMessage) ElMessage.success('任务信息已刷新')
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
@@ -129,7 +151,7 @@ async function startAgent(): Promise<void> {
   agentActionLoading.value = true
   try {
     agentStatus.value = await taskApi.startAgent(taskId.value)
-    await Promise.all([loadTask(), loadParseResult()])
+    await Promise.all([loadTask(), loadParseResults()])
     activeTab.value = agentStatus.value.is_waiting_confirmation ? 'parse' : 'progress'
     ElMessage.success(agentStatus.value.is_waiting_confirmation ? '解析完成，请确认解析结果' : 'Agent 已启动')
   } catch (error) {
@@ -152,6 +174,36 @@ async function confirmAgent(): Promise<void> {
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
     await refreshAll()
+  } finally {
+    agentActionLoading.value = false
+  }
+}
+
+function openRejectDialog(): void {
+  rejectReason.value = ''
+  const defaultTemplate = templates.value.find((item) => item.is_default)
+  rejectTemplateId.value =
+    task.value?.parse_template_id || defaultTemplate?.id || ''
+  rejectDialogVisible.value = true
+}
+
+async function rejectAndReparse(): Promise<void> {
+  if (!parseRecord.value) return
+  agentActionLoading.value = true
+  try {
+    agentStatus.value = await taskApi.rejectAndReparse(
+      taskId.value,
+      parseRecord.value.id,
+      rejectReason.value,
+      rejectTemplateId.value,
+    )
+    rejectDialogVisible.value = false
+    rejectReason.value = ''
+    await refreshAll()
+    activeTab.value = 'progress'
+    ElMessage.success('已驳回原解析结果并开始重新解析')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
   } finally {
     agentActionLoading.value = false
   }
@@ -203,7 +255,10 @@ function updatePolling(): void {
 }
 
 watch(isAgentRunning, updatePolling)
-onMounted(() => initialize())
+onMounted(() => {
+  void initialize()
+  void loadTemplates()
+})
 onBeforeUnmount(() => {
   if (pollTimer !== null) window.clearInterval(pollTimer)
 })
@@ -234,6 +289,16 @@ onBeforeUnmount(() => {
             @click="confirmDialogVisible = true"
           >
             确认并继续
+          </el-button>
+          <el-button
+            v-if="isWaitingConfirm && parseRecord"
+            type="danger"
+            plain
+            :icon="RefreshLeft"
+            :loading="agentActionLoading"
+            @click="openRejectDialog"
+          >
+            驳回并重新解析
           </el-button>
           <el-button
             v-else
@@ -308,7 +373,7 @@ onBeforeUnmount(() => {
           </el-tab-pane>
 
           <el-tab-pane label="解析结果" name="parse">
-            <ParseResultPanel :record="parseRecord" :loading="refreshing" />
+            <ParseResultPanel :record="parseRecord" :history="parseHistory" :loading="refreshing" />
           </el-tab-pane>
 
           <el-tab-pane label="匹配结果" name="match">
@@ -345,6 +410,50 @@ onBeforeUnmount(() => {
       <template #footer>
         <el-button @click="confirmDialogVisible = false">取消</el-button>
         <el-button type="warning" :loading="agentActionLoading" @click="confirmAgent">确认并开始匹配</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="rejectDialogVisible" title="驳回解析结果并重新解析" width="520px">
+      <el-alert
+        title="原解析结果将标记为已驳回，并保留在历史版本中"
+        description="确认后将立即重新解析，新结果会作为新版本追加，可随时切回对比。"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+      <el-form label-position="top" class="confirm-form">
+        <el-form-item label="重新解析使用的模板">
+          <el-select
+            v-model="rejectTemplateId"
+            :loading="templatesLoading"
+            class="reject-template-select"
+          >
+            <el-option label="跟随默认模板" value="" />
+            <el-option
+              v-for="template in templates"
+              :key="template.id"
+              :label="`${template.name}（${template.version}）`"
+              :value="template.id"
+            />
+          </el-select>
+          <div class="template-help">选择后会同时作为该任务的模板保存，后续解析沿用。</div>
+        </el-form-item>
+        <el-form-item label="驳回原因（可选）">
+          <el-input
+            v-model="rejectReason"
+            type="textarea"
+            :rows="3"
+            maxlength="2000"
+            show-word-limit
+            placeholder="记录驳回原因，便于后续版本对比"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="rejectDialogVisible = false">取消</el-button>
+        <el-button type="danger" :loading="agentActionLoading" @click="rejectAndReparse">
+          驳回并重新解析
+        </el-button>
       </template>
     </el-dialog>
   </div>
@@ -552,6 +661,17 @@ onBeforeUnmount(() => {
 
 .confirm-form {
   margin-top: 20px;
+}
+
+.reject-template-select {
+  width: 100%;
+}
+
+.template-help {
+  margin-top: 6px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 @keyframes banner-pulse {

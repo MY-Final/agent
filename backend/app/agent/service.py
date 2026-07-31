@@ -18,10 +18,12 @@ from app.schemas.agent import (
     AgentConfirmInput,
     AgentMatchSummary,
     AgentParseSummary,
+    AgentRejectInput,
     AgentStatusRead,
 )
 from app.schemas.skills.match import MatchReport
 from app.schemas.skills.parse import ParseResult
+from app.services.template_service import TemplateService
 
 
 logger = logging.getLogger(__name__)
@@ -162,6 +164,61 @@ class AgentService:
             # 业务状态已经取消；checkpoint 清理失败不应让前端误以为取消失败。
             logger.exception("清理已取消 Agent 的 checkpoint 失败，thread_id=%s", thread_id)
         return await AgentService._get_status_by_run_id(run_id)
+
+    @staticmethod
+    async def reject_and_reparse(
+        task_id: uuid.UUID,
+        payload: AgentRejectInput,
+    ) -> AgentStatusRead:
+        """驳回指定解析结果，并立即重新解析作为新版本追加。"""
+
+        async with AsyncSessionFactory() as session:
+            task = await AgentService._get_task_for_update(session, task_id)
+            parse_record = await session.get(TaskParseResult, payload.parse_result_id)
+            if parse_record is None:
+                raise NotFoundException("解析结果不存在")
+            if parse_record.task_id != task_id:
+                raise AppException(
+                    "解析结果不属于当前任务",
+                    code=40933,
+                    status_code=409,
+                )
+            run = await AgentService._get_latest_run(session, task_id)
+            if run is not None and run.status == AgentRunStatus.RUNNING:
+                raise ConflictException("Agent 正在执行中，暂不能驳回解析结果")
+
+            was_waiting = (
+                run is not None and run.status == AgentRunStatus.WAITING_CONFIRM
+            )
+            thread_id = run.thread_id if run is not None else None
+            if was_waiting:
+                run.current_step = AgentStep.CANCELLED
+                run.status = AgentRunStatus.CANCELLED
+                run.error_message = None
+                run.completed_at = datetime.now(timezone.utc)
+                task.status = TaskStatus.CREATED
+
+            parse_record.is_rejected = True
+            parse_record.reject_reason = payload.reason
+            if "template_id" in payload.model_fields_set:
+                if payload.template_id is not None:
+                    await TemplateService.ensure_exists(
+                        session,
+                        payload.template_id,
+                    )
+                # 显式选择模板后同步到任务，后续重新解析沿用同一选择。
+                task.parse_template_id = payload.template_id
+            await session.commit()
+
+        if was_waiting and thread_id is not None:
+            try:
+                await agent_graph_manager.delete_thread(thread_id)
+            except Exception:
+                logger.exception(
+                    "驳回后清理 Agent checkpoint 失败，thread_id=%s",
+                    thread_id,
+                )
+        return await AgentService.start(task_id)
 
     @staticmethod
     async def _get_status_by_run_id(run_id: uuid.UUID) -> AgentStatusRead:

@@ -38,12 +38,14 @@ async def create_task(payload: TaskCreate, session: SessionDep) -> ApiResponse[T
 async def list_tasks(
     session: SessionDep,
     task_status: Annotated[TaskStatus | None, Query(alias="status")] = None,
+    keyword: Annotated[str | None, Query(max_length=255)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ApiResponse[TaskListData]:
     result = await TaskService.list_tasks(
         session,
         status=task_status,
+        keyword=keyword,
         page=page,
         page_size=page_size,
     )

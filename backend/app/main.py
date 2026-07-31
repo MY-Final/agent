@@ -22,6 +22,7 @@ from app.core.minio import minio_storage
 from app.core.redis import redis_manager
 from app.core.response import ApiResponse, success_response
 from app.schemas.task import HealthData
+from app.services.template_service import TemplateService
 from app.utils.validation import translate_validation_errors
 
 
@@ -37,6 +38,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("正在启动 %s，运行环境：%s", settings.app_name, settings.app_env)
     try:
         await init_database()
+        async with AsyncSessionFactory() as session:
+            await TemplateService.seed_default_if_empty(session)
         try:
             await redis_manager.connect()
         except Exception as exc:

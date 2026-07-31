@@ -29,6 +29,7 @@ export interface TaskListItem {
 }
 
 export interface TaskDetail extends Omit<TaskListItem, 'file_count'> {
+  parse_template_id: string | null
   files: TaskFile[]
 }
 
@@ -44,6 +45,7 @@ export interface TaskCreateInput {
   project_name: string
   remark?: string | null
   source?: string | null
+  parse_template_id?: string | null
 }
 
 export interface DownloadUrlData {
