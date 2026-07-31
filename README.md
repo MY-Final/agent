@@ -107,6 +107,18 @@ npm run build
 cargo check --manifest-path src-tauri/Cargo.toml -j 1
 ```
 
+## Windows 安装包
+
+桌面端已配置 NSIS `.exe` 和 WiX `.msi` 两种安装包。在 Windows PowerShell 中执行：
+
+```powershell
+cd D:\Repos\agent\desktop
+npm install
+npm run tauri:build
+```
+
+安装包生成在 `desktop/src-tauri/target/release/bundle/nsis/` 和 `desktop/src-tauri/target/release/bundle/msi/`。当前推荐只打包 GUI，FastAPI 及 PostgreSQL、Redis、MinIO 作为独立服务运行；完整环境要求、单格式构建命令、WebView2 注意事项以及未来 PyInstaller/Nuitka Sidecar 方案见 [desktop/README.md](desktop/README.md)。
+
 ## 配置安全
 
 不要提交 `backend/.env`、LLM API Key、数据库密码或 MinIO 凭据。`.env.example` 仅保留占位值。标书原文、解析结果和公司资质数据均应按敏感业务数据处理。

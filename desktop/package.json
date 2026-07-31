@@ -9,7 +9,11 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "type-check": "vue-tsc --noEmit",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:nsis": "tauri build --bundles nsis",
+    "tauri:build:msi": "tauri build --bundles msi"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

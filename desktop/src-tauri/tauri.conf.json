@@ -27,6 +27,34 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": ["nsis", "msi"],
+    "publisher": "MY-Final",
+    "homepage": "https://github.com/MY-Final/agent",
+    "category": "Business",
+    "shortDescription": "投标文件解析与公司资质匹配桌面工作台",
+    "longDescription": "用于创建投标分析任务、上传标书、执行结构化解析、人工确认和公司资质匹配的桌面应用。",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "wix": {
+        "upgradeCode": "f604796d-7cae-550e-b41b-d26c969eddc2",
+        "language": "zh-CN"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "languages": ["SimpChinese"]
+      }
+    }
   }
 }
