@@ -83,6 +83,12 @@ class DownloadUrlData(BaseModel):
     filename: str
 
 
+class PdfInfo(BaseModel):
+    filename: str
+    total_pages: int
+    content_type: str
+
+
 class DeleteResult(BaseModel):
     id: uuid.UUID
     deleted: bool = True

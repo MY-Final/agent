@@ -11,7 +11,13 @@ from app.core.exceptions import AppException, NotFoundException, StorageExceptio
 from app.core.minio import MinIOStorage
 from app.models.parse_result import ParseResultStatus, TaskParseResult
 from app.models.task import Task, TaskFile, TaskStatus
-from app.schemas.skills.parse import ParseInput, ParseTemplate
+from app.schemas.skills.parse import (
+    ParseInput,
+    ParseResult,
+    ParseResultUpdate,
+    ParseSourceTextItem,
+    ParseTemplate,
+)
 from app.services.template_service import TemplateService
 from app.skills.parse_tender import ParseTenderSkill, TenderDocument
 from app.skills.text_extractor import TextExtractor
@@ -146,7 +152,11 @@ class ParseService:
                     sources,
                     Path(temp_dir),
                 )
-                result = await ParseTenderSkill().run(documents, template=template)
+                outcome = await ParseTenderSkill().run(
+                    documents,
+                    template=template,
+                    task_id=task_id,
+                )
 
             record = TaskParseResult(
                 task_id=task_id,
@@ -154,7 +164,8 @@ class ParseService:
                 source_object_keys=source_keys,
                 template_id=template_id,
                 template_version=template.version,
-                result_json=result.model_dump(mode="json"),
+                source_texts=outcome.source_texts,
+                result_json=outcome.result.model_dump(mode="json"),
                 status=ParseResultStatus.SUCCESS,
                 error_message=None,
             )
@@ -201,6 +212,66 @@ class ParseService:
                 code=50021,
                 status_code=500,
             ) from exc
+
+    @staticmethod
+    async def update_result(
+        session: AsyncSession,
+        task_id: uuid.UUID,
+        parse_result_id: uuid.UUID,
+        payload: ParseResultUpdate,
+    ) -> TaskParseResult:
+        """人工核对后的就地修正：改值不改版本，修正结果直接供匹配使用。"""
+
+        record = await ParseService._get_task_parse_result(
+            session,
+            task_id,
+            parse_result_id,
+        )
+        if record.result_json is None:
+            raise AppException(
+                "该解析记录没有结构化结果可修正",
+                code=40934,
+                status_code=409,
+            )
+        envelope = record.result_json
+        template = ParseTemplate.model_validate(envelope["template"])
+        corrected = ParseResult(
+            template=template,
+            data=payload.data,
+            raw_summary=payload.raw_summary,
+            confidence=envelope.get("confidence"),
+        )
+        record.result_json = corrected.model_dump(mode="json")
+        await session.commit()
+        await session.refresh(record)
+        return record
+
+    @staticmethod
+    async def get_source_text(
+        session: AsyncSession,
+        task_id: uuid.UUID,
+        parse_result_id: uuid.UUID,
+    ) -> list[ParseSourceTextItem]:
+        record = await ParseService._get_task_parse_result(
+            session,
+            task_id,
+            parse_result_id,
+        )
+        return [
+            ParseSourceTextItem.model_validate(item)
+            for item in (record.source_texts or [])
+        ]
+
+    @staticmethod
+    async def _get_task_parse_result(
+        session: AsyncSession,
+        task_id: uuid.UUID,
+        parse_result_id: uuid.UUID,
+    ) -> TaskParseResult:
+        record = await session.get(TaskParseResult, parse_result_id)
+        if record is None or record.task_id != task_id:
+            raise NotFoundException("解析结果不存在")
+        return record
 
     @staticmethod
     async def _download_sources(

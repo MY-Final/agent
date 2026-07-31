@@ -1,16 +1,25 @@
+import io
 import uuid
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.core.minio import minio_storage
 from app.core.response import ApiResponse, success_response
 from app.schemas.skills.match import MatchInput, MatchResultRead
-from app.schemas.skills.parse import ParseInput, ParseResultRead
+from app.schemas.skills.parse import (
+    ParseInput,
+    ParseResultRead,
+    ParseResultUpdate,
+    ParseSourceTextItem,
+)
 from app.services.match_service import MatchService
 from app.services.parse_service import ParseService
+from app.services.export_service import ExportService
 
 
 router = APIRouter(tags=["业务 Skills"])
@@ -77,6 +86,43 @@ async def list_parse_results(
     )
 
 
+@router.put(
+    "/tasks/{task_id}/parse-results/{parse_result_id}",
+    response_model=ApiResponse[ParseResultRead],
+    summary="就地修正解析结果字段",
+)
+async def update_parse_result(
+    task_id: uuid.UUID,
+    parse_result_id: uuid.UUID,
+    payload: ParseResultUpdate,
+    session: SessionDep,
+) -> ApiResponse[ParseResultRead]:
+    record = await ParseService.update_result(
+        session,
+        task_id,
+        parse_result_id,
+        payload,
+    )
+    return success_response(
+        ParseResultRead.from_orm_record(record),
+        msg="解析结果已修正",
+    )
+
+
+@router.get(
+    "/tasks/{task_id}/parse-results/{parse_result_id}/source-text",
+    response_model=ApiResponse[list[ParseSourceTextItem]],
+    summary="获取解析结果的标书原文文本（人工对照用）",
+)
+async def get_parse_source_text(
+    task_id: uuid.UUID,
+    parse_result_id: uuid.UUID,
+    session: SessionDep,
+) -> ApiResponse[list[ParseSourceTextItem]]:
+    items = await ParseService.get_source_text(session, task_id, parse_result_id)
+    return success_response(items)
+
+
 @router.post(
     "/skills/match",
     response_model=ApiResponse[MatchResultRead],
@@ -120,3 +166,25 @@ async def get_match_result(
 ) -> ApiResponse[MatchResultRead]:
     record = await MatchService.get_latest_result(session, task_id)
     return success_response(MatchResultRead.from_orm_record(record))
+
+
+@router.get(
+    "/tasks/{task_id}/export",
+    summary="导出投标分析报告（xlsx）",
+)
+async def export_task_report(
+    task_id: uuid.UUID,
+    session: SessionDep,
+) -> StreamingResponse:
+    filename, content = await ExportService.build_xlsx(session, task_id)
+    encoded = quote(filename)
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"
+        },
+    )

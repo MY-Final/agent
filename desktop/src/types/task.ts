@@ -53,3 +53,9 @@ export interface DownloadUrlData {
   expires_in: number
   filename: string
 }
+
+export interface PdfInfo {
+  filename: string
+  total_pages: number
+  content_type: string
+}

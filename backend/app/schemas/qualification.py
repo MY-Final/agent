@@ -2,7 +2,7 @@ import math
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -256,3 +256,25 @@ CertificateListData = PaginatedData[QualificationCertificateRead]
 PerformanceListData = PaginatedData[PerformanceRecordRead]
 PersonnelListData = PaginatedData[PersonnelCertificateRead]
 CompanyListData = PaginatedData[CompanyProfileRead]
+
+
+class ExpiryWarningItem(BaseModel):
+    id: uuid.UUID
+    kind: Literal["certificate", "personnel"]
+    title: str
+    detail: str
+    valid_to: date | None
+    days_left: int | None
+    status: Literal["expiring", "expired", "revoked", "off_job"]
+
+
+class ExpiryWarningsRead(BaseModel):
+    items: list[ExpiryWarningItem]
+    expired_count: int
+    expiring_count: int
+
+
+class QualificationImportResult(BaseModel):
+    created: int = 0
+    failed: int = 0
+    errors: list[str] = Field(default_factory=list)

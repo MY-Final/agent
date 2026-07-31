@@ -65,6 +65,12 @@ export interface ParseResultRecord {
   updated_at: string
 }
 
+export interface ParseSourceTextItem {
+  filename: string
+  extraction_method: string | null
+  text: string
+}
+
 export type RiskLevel = 'none' | 'low' | 'medium' | 'high'
 
 export interface MatchItem {

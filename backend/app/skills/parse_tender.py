@@ -1,5 +1,7 @@
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.schemas.skills.parse import ParseResult, ParseTemplate
 from app.skills.llm import TenderLLMClient
@@ -12,6 +14,14 @@ class TenderDocument:
     filename: str
     object_key: str
     local_path: Path
+
+
+@dataclass(slots=True, frozen=True)
+class ParseOutcome:
+    """一次解析的完整产物：结构化结果 + 各文件提取原文（供人工对照）。"""
+
+    result: ParseResult
+    source_texts: list[dict[str, Any]]
 
 
 class ParseTenderSkill:
@@ -29,13 +39,23 @@ class ParseTenderSkill:
         self,
         documents: list[TenderDocument],
         template: ParseTemplate = SEED_PARSE_TEMPLATE,
-    ) -> ParseResult:
+        *,
+        task_id: uuid.UUID | None = None,
+    ) -> ParseOutcome:
         if not documents:
             raise ValueError("没有可解析的标书文件")
 
         sections: list[str] = []
+        source_texts: list[dict[str, Any]] = []
         for index, document in enumerate(documents, start=1):
             extracted = await self._text_extractor.extract(document.local_path)
+            source_texts.append(
+                {
+                    "filename": document.filename,
+                    "extraction_method": extracted.extraction_method,
+                    "text": extracted.text,
+                }
+            )
             sections.append(
                 "\n".join(
                     [
@@ -47,4 +67,11 @@ class ParseTenderSkill:
             )
 
         llm_client = self._llm_client or TenderLLMClient()
-        return await llm_client.extract("\n\n".join(sections), template)
+        return ParseOutcome(
+            result=await llm_client.extract(
+                "\n\n".join(sections),
+                template,
+                task_id=task_id,
+            ),
+            source_texts=source_texts,
+        )

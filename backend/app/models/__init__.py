@@ -1,5 +1,6 @@
 from app.models.agent_run import AgentRun, AgentRunStatus, AgentStep
 from app.models.llm_provider import LLMProvider
+from app.models.llm_usage import LLMUsage, LLMUsageStatus
 from app.models.match_result import MatchResultStatus, TaskMatchResult
 from app.models.parse_template import ParseTemplate
 from app.models.parse_result import ParseResultStatus, TaskParseResult
@@ -19,6 +20,8 @@ __all__ = [
     "CertificateStatus",
     "CompanyProfile",
     "LLMProvider",
+    "LLMUsage",
+    "LLMUsageStatus",
     "MatchResultStatus",
     "ParseTemplate",
     "ParseResultStatus",

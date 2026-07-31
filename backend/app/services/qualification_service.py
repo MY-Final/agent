@@ -1,8 +1,12 @@
+import io
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, TypeVar
 
+from fastapi import UploadFile
+from openpyxl import load_workbook
+from pydantic import ValidationError
 from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,10 +28,13 @@ from app.models.qualification import (
 from app.schemas.qualification import (
     CompanyProfileCreate,
     CompanyProfileUpdate,
+    ExpiryWarningItem,
+    ExpiryWarningsRead,
     PerformanceRecordCreate,
     PerformanceRecordUpdate,
     PersonnelCertificateCreate,
     PersonnelCertificateUpdate,
+    QualificationImportResult,
     QualificationCertificateCreate,
     QualificationCertificateUpdate,
 )
@@ -371,6 +378,226 @@ class QualificationService:
         return certificates, performances, personnel, companies
 
     @staticmethod
+    async def get_expiry_warnings(
+        session: AsyncSession,
+    ) -> ExpiryWarningsRead:
+        """证书/人员证书的失效预警：临期、已过期、已撤销、离职。"""
+
+        today = date.today()
+        warning_cutoff = today + timedelta(days=90)
+        certificates = list(
+            (await session.scalars(select(QualificationCertificate))).all()
+        )
+        personnel = list(
+            (await session.scalars(select(PersonnelCertificate))).all()
+        )
+
+        items: list[ExpiryWarningItem] = []
+        for cert in certificates:
+            days_left = (cert.valid_to - today).days if cert.valid_to else None
+            if cert.status == CertificateStatus.REVOKED:
+                status = "revoked"
+            elif days_left is not None and days_left < 0:
+                status = "expired"
+            elif cert.status == CertificateStatus.EXPIRED:
+                status = "expired"
+            elif days_left is not None and days_left <= 90:
+                status = "expiring"
+            else:
+                continue
+            items.append(
+                ExpiryWarningItem(
+                    id=cert.id,
+                    kind="certificate",
+                    title=cert.name,
+                    detail="、".join(
+                        filter(
+                            None,
+                            [
+                                cert.level,
+                                cert.specialty,
+                                cert.cert_number and f"编号 {cert.cert_number}",
+                            ],
+                        )
+                    )
+                    or cert.issuing_authority
+                    or "资质证书",
+                    valid_to=cert.valid_to,
+                    days_left=days_left,
+                    status=status,  # type: ignore[arg-type]
+                )
+            )
+
+        for item in personnel:
+            days_left = (item.valid_to - today).days if item.valid_to else None
+            if not item.is_on_job:
+                status = "off_job"
+            elif days_left is not None and days_left < 0:
+                status = "expired"
+            elif days_left is not None and days_left <= 90:
+                status = "expiring"
+            else:
+                continue
+            items.append(
+                ExpiryWarningItem(
+                    id=item.id,
+                    kind="personnel",
+                    title=f"{item.person_name} · {item.cert_type}",
+                    detail=item.specialty or item.cert_number or "人员证书",
+                    valid_to=item.valid_to,
+                    days_left=days_left,
+                    status=status,  # type: ignore[arg-type]
+                )
+            )
+
+        expired_count = sum(
+            1 for item in items if item.status in {"expired", "revoked", "off_job"}
+        )
+        expiring_count = sum(1 for item in items if item.status == "expiring")
+        return ExpiryWarningsRead(
+            items=items,
+            expired_count=expired_count,
+            expiring_count=expiring_count,
+        )
+
+    @staticmethod
+    async def import_excel(
+        session: AsyncSession,
+        file: UploadFile,
+    ) -> QualificationImportResult:
+        """按工作表批量导入知识库：资质证书/业绩/人员证书/公司信息。"""
+
+        result = QualificationImportResult()
+        content = await file.read()
+        try:
+            workbook = load_workbook(
+                io.BytesIO(content),
+                data_only=True,
+                read_only=True,
+            )
+        except Exception as exc:
+            result.failed = 1
+            result.errors.append(f"无法解析 Excel 文件：{exc}")
+            return result
+
+        sheet_specs = [
+            (
+                ("资质证书", "证书", "certificates"),
+                "certificate",
+                _CERTIFICATE_HEADERS,
+            ),
+            (
+                ("业绩", "performances"),
+                "performance",
+                _PERFORMANCE_HEADERS,
+            ),
+            (
+                ("人员证书", "人员", "personnel"),
+                "personnel",
+                _PERSONNEL_HEADERS,
+            ),
+            (
+                ("公司信息", "公司", "companies"),
+                "company",
+                _COMPANY_HEADERS,
+            ),
+        ]
+        for sheet_aliases, kind, headers in sheet_specs:
+            worksheet = None
+            for alias in sheet_aliases:
+                if alias in workbook.sheetnames:
+                    worksheet = workbook[alias]
+                    break
+            if worksheet is None:
+                continue
+            await QualificationService._import_sheet(
+                session,
+                worksheet,
+                kind,
+                headers,
+                result,
+            )
+
+        try:
+            await session.commit()
+        except Exception as exc:
+            await session.rollback()
+            result.failed += result.created
+            result.created = 0
+            result.errors.append(f"批量写入失败：{exc}")
+        return result
+
+    @staticmethod
+    async def _import_sheet(
+        session: AsyncSession,
+        worksheet: Any,
+        kind: str,
+        headers: dict[str, str],
+        result: QualificationImportResult,
+    ) -> None:
+        header_map: dict[int, str] = {}
+        data_rows: list[dict[str, Any]] = []
+        for row_index, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
+            values = ["" if value is None else value for value in row]
+            if not any(str(value).strip() for value in values):
+                continue
+            if not header_map:
+                for column_index, value in enumerate(values):
+                    label = str(value).strip()
+                    if label in headers:
+                        header_map[column_index] = headers[label]
+                if not header_map:
+                    result.failed += 1
+                    result.errors.append(
+                        f"{worksheet.title} 首行未找到可识别的表头，跳过该表"
+                    )
+                    return
+                continue
+            record_data: dict[str, Any] = {}
+            for column_index, value in enumerate(values):
+                field = header_map.get(column_index)
+                if field:
+                    record_data[field] = _normalize_import_value(field, value)
+            data_rows.append((row_index, record_data))
+
+        for row_index, record_data in data_rows:
+            try:
+                await QualificationService._import_row(session, kind, record_data)
+                result.created += 1
+            except (ValidationError, ValueError, TypeError) as exc:
+                result.failed += 1
+                result.errors.append(
+                    f"{worksheet.title} 第 {row_index} 行导入失败：{_first_error(exc)}"
+                )
+
+    @staticmethod
+    async def _import_row(
+        session: AsyncSession,
+        kind: str,
+        data: dict[str, Any],
+    ) -> None:
+        values = {key: value for key, value in data.items() if value is not _OMIT}
+        if kind == "certificate":
+            payload = QualificationCertificateCreate(**values)
+            session.add(QualificationCertificate(**payload.model_dump()))
+        elif kind == "performance":
+            payload = PerformanceRecordCreate(**values)
+            session.add(PerformanceRecord(**payload.model_dump()))
+        elif kind == "personnel":
+            payload = PersonnelCertificateCreate(**values)
+            session.add(PersonnelCertificate(**payload.model_dump()))
+        elif kind == "company":
+            existing = await session.scalar(
+                select(CompanyProfile.id).where(
+                    CompanyProfile.company_name == values["company_name"]
+                )
+            )
+            if existing is not None:
+                raise ValueError("公司名称已存在")
+            payload = CompanyProfileCreate(**values)
+            session.add(CompanyProfile(**payload.model_dump()))
+
+    @staticmethod
     async def _paginate(
         session: AsyncSession,
         model: type[ModelT],
@@ -459,3 +686,128 @@ class QualificationService:
                 PersonnelCertificate.valid_to >= today,
             ),
         )
+
+
+_OMIT = object()
+
+_CERTIFICATE_HEADERS = {
+    "证书名称": "name",
+    "名称": "name",
+    "等级": "level",
+    "级别": "level",
+    "专业": "specialty",
+    "证书编号": "cert_number",
+    "编号": "cert_number",
+    "发证机关": "issuing_authority",
+    "生效日期": "valid_from",
+    "有效期开始": "valid_from",
+    "失效日期": "valid_to",
+    "有效期至": "valid_to",
+    "到期日期": "valid_to",
+    "状态": "status",
+    "备注": "remark",
+}
+
+_PERFORMANCE_HEADERS = {
+    "项目名称": "project_name",
+    "合同金额": "project_amount",
+    "项目金额": "project_amount",
+    "金额": "project_amount",
+    "币种": "currency",
+    "开始日期": "start_date",
+    "结束日期": "end_date",
+    "是否完成": "is_completed",
+    "完成状态": "is_completed",
+    "业主名称": "owner_name",
+    "业主": "owner_name",
+    "采购人": "owner_name",
+    "项目地点": "location",
+    "地点": "location",
+    "关联资质": "related_qualification",
+    "项目描述": "description",
+    "描述": "description",
+}
+
+_PERSONNEL_HEADERS = {
+    "姓名": "person_name",
+    "人员姓名": "person_name",
+    "人员": "person_name",
+    "证书类型": "cert_type",
+    "证书": "cert_type",
+    "专业": "specialty",
+    "证书编号": "cert_number",
+    "编号": "cert_number",
+    "生效日期": "valid_from",
+    "有效期开始": "valid_from",
+    "失效日期": "valid_to",
+    "有效期至": "valid_to",
+    "到期日期": "valid_to",
+    "是否在职": "is_on_job",
+    "在职状态": "is_on_job",
+    "备注": "remark",
+}
+
+_COMPANY_HEADERS = {
+    "公司名称": "company_name",
+    "法定代表人": "legal_person",
+    "法人": "legal_person",
+    "注册资本": "registered_capital",
+    "成立日期": "establish_date",
+    "地址": "address",
+    "联系方式": "contact_info",
+    "联系电话": "contact_info",
+    "电话": "contact_info",
+}
+
+
+def _normalize_import_value(field: str, value: Any) -> Any:
+    defaulted = {"status", "currency", "is_completed", "is_on_job"}
+    if value is None:
+        return _OMIT if field in defaulted else None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return _OMIT if field in defaulted else None
+    if field in {"is_completed", "is_on_job"}:
+        return _parse_import_bool(text)
+    if field == "status":
+        return _parse_import_status(text)
+    if field in {"project_amount", "registered_capital"}:
+        try:
+            return Decimal(text.replace(",", ""))
+        except Exception:
+            return None
+    return text
+
+
+def _parse_import_bool(value: str) -> bool:
+    if value in {"是", "有", "√", "TRUE", "true", "True", "1", "Y", "y"}:
+        return True
+    if value in {"否", "无", "×", "FALSE", "false", "False", "0", "N", "n"}:
+        return False
+    raise ValueError(f"无法识别布尔值：{value}")
+
+
+def _parse_import_status(value: str) -> str:
+    mapping = {
+        "有效": "valid",
+        "正常": "valid",
+        "已过期": "expired",
+        "过期": "expired",
+        "失效": "expired",
+        "已撤销": "revoked",
+        "撤销": "revoked",
+    }
+    return mapping.get(value, value)
+
+
+def _first_error(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        first = exc.errors()[0]
+        location = ".".join(str(part) for part in first.get("loc", ()))
+        message = first.get("msg", str(exc))
+        return f"{location} {message}".strip()
+    return str(exc)

@@ -1,5 +1,7 @@
 import json
 import logging
+import time
+import uuid
 from contextlib import suppress
 from typing import Any
 
@@ -19,6 +21,7 @@ from app.core.exceptions import AppException
 from app.schemas.parse_template import TemplateSuggestion
 from app.schemas.skills.parse import ParseResult, ParseTemplate
 from app.services.llm_provider_service import LLMRuntimeConfig, get_current_llm_config
+from app.services.llm_usage_service import LLMUsageService
 from app.skills.parse_template import (
     SUGGEST_SYSTEM_PROMPT,
     build_extraction_schema,
@@ -70,9 +73,14 @@ class TenderLLMClient:
         messages: list[dict[str, str]],
         schema_name: str,
         schema: dict[str, Any],
+        *,
+        purpose: str,
+        task_id: uuid.UUID | None = None,
     ) -> str:
-        """发起结构化输出请求并统一映射上游错误，返回原始内容文本。"""
+        """发起结构化输出请求，统一映射上游错误并记录用量，返回内容文本。"""
 
+        started = time.perf_counter()
+        error_message: str | None = None
         completion_options = _completion_options(config)
         try:
             try:
@@ -104,55 +112,99 @@ class TenderLLMClient:
                     **completion_options,
                 )
         except AuthenticationError as exc:
-            raise AppException(
-                "大模型鉴权失败，请检查当前提供商的 API Key",
-                code=50213,
-                status_code=502,
-            ) from exc
+            error_message = "大模型鉴权失败，请检查当前提供商的 API Key"
+            raise AppException(error_message, code=50213, status_code=502) from exc
         except PermissionDeniedError as exc:
-            raise AppException(
-                "当前密钥无权调用配置的大模型",
-                code=50214,
-                status_code=502,
-            ) from exc
+            error_message = "当前密钥无权调用配置的大模型"
+            raise AppException(error_message, code=50214, status_code=502) from exc
         except RateLimitError as exc:
-            raise AppException(
-                "大模型服务请求过于频繁或额度不足",
-                code=50215,
-                status_code=502,
-            ) from exc
+            error_message = "大模型服务请求过于频繁或额度不足"
+            raise AppException(error_message, code=50215, status_code=502) from exc
         except APITimeoutError as exc:
-            raise AppException(
-                "大模型服务响应超时",
-                code=50401,
-                status_code=504,
-            ) from exc
+            error_message = "大模型服务响应超时"
+            raise AppException(error_message, code=50401, status_code=504) from exc
         except APIConnectionError as exc:
-            raise AppException(
-                "无法连接大模型服务，请检查当前提供商地址和网络",
-                code=50216,
-                status_code=502,
-            ) from exc
+            error_message = "无法连接大模型服务，请检查当前提供商地址和网络"
+            raise AppException(error_message, code=50216, status_code=502) from exc
         except APIStatusError as exc:
-            raise AppException(
-                f"大模型服务请求失败，HTTP 状态码：{exc.status_code}",
-                code=50217,
-                status_code=502,
-            ) from exc
+            error_message = f"大模型服务请求失败，HTTP 状态码：{exc.status_code}"
+            raise AppException(error_message, code=50217, status_code=502) from exc
+        finally:
+            if error_message is not None:
+                await self._record_usage(
+                    config,
+                    purpose,
+                    task_id,
+                    status="failed",
+                    error_message=error_message,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                )
 
+        latency_ms = int((time.perf_counter() - started) * 1000)
         content = response.choices[0].message.content if response.choices else None
         if not content:
+            await self._record_usage(
+                config,
+                purpose,
+                task_id,
+                status="failed",
+                error_message="大模型没有返回可用的结构化内容",
+                latency_ms=latency_ms,
+            )
             raise AppException(
                 "大模型没有返回可用的结构化内容",
                 code=50211,
                 status_code=502,
             )
+        usage = response.usage
+        await self._record_usage(
+            config,
+            purpose,
+            task_id,
+            status="success",
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            total_tokens=getattr(usage, "total_tokens", 0) or 0,
+            latency_ms=latency_ms,
+        )
         return content
+
+    @staticmethod
+    async def _record_usage(
+        config: LLMRuntimeConfig,
+        purpose: str,
+        task_id: uuid.UUID | None,
+        *,
+        status: str,
+        error_message: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+        latency_ms: int | None = None,
+    ) -> None:
+        """用量记录失败只写日志，绝不影响解析/建议主流程。"""
+
+        with suppress(Exception):
+            await LLMUsageService.record_usage(
+                provider_id=config.provider_id,
+                provider_name=config.provider_name,
+                model=config.default_model,
+                purpose=purpose,
+                task_id=task_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                latency_ms=latency_ms,
+                status=status,
+                error_message=error_message,
+            )
 
     async def extract(
         self,
         tender_text: str,
         template: ParseTemplate,
+        *,
+        task_id: uuid.UUID | None = None,
     ) -> ParseResult:
         config, client = await self._make_client()
         messages = [
@@ -175,6 +227,8 @@ class TenderLLMClient:
                 messages,
                 "tender_parse_result",
                 schema,
+                purpose="parse",
+                task_id=task_id,
             )
         finally:
             with suppress(Exception):
@@ -218,6 +272,7 @@ class TenderLLMClient:
                 messages,
                 "tender_template_suggestion",
                 schema,
+                purpose="template_suggest",
             )
         finally:
             with suppress(Exception):

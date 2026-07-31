@@ -329,6 +329,19 @@ class ParseInput(BaseModel):
         return self
 
 
+class ParseResultUpdate(BaseModel):
+    """人工核对后的就地修正：只允许改值，模板与版本保持不变。"""
+
+    data: dict[str, Any]
+    raw_summary: str | None = None
+
+
+class ParseSourceTextItem(BaseModel):
+    filename: str
+    extraction_method: str | None = None
+    text: str
+
+
 class ParseResultRead(BaseModel):
     id: uuid.UUID
     task_id: uuid.UUID | None

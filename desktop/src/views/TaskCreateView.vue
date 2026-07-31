@@ -105,7 +105,7 @@ onMounted(() => {
   <div class="page-container create-page">
     <header class="page-header">
       <div>
-        <el-button text :icon="ArrowLeft" class="back-button" @click="router.push('/')">返回任务列表</el-button>
+        <el-button text :icon="ArrowLeft" class="back-button" @click="router.push('/tasks')">返回任务列表</el-button>
         <h1 class="page-title">新建分析任务</h1>
         <p class="page-subtitle">填写项目基础信息并上传一份标书，创建后即可启动 Agent 分析。</p>
       </div>
@@ -184,7 +184,7 @@ onMounted(() => {
     </div>
 
     <footer class="create-actions">
-      <el-button @click="router.push('/')">取消</el-button>
+      <el-button @click="router.push('/tasks')">取消</el-button>
       <el-button type="primary" :loading="submitting" @click="submit">
         {{ submitting ? '正在创建并上传' : '创建任务' }}
       </el-button>

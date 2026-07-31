@@ -145,4 +145,16 @@ _LEGACY_SCHEMA_MIGRATIONS: tuple[str, ...] = (
         END IF;
     END $$;
     """,
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'task_parse_results'
+              AND column_name = 'source_texts'
+        ) THEN
+            ALTER TABLE task_parse_results ADD COLUMN source_texts JSONB;
+        END IF;
+    END $$;
+    """,
 )

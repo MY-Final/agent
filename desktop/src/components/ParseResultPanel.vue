@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Document, Files } from '@element-plus/icons-vue'
+import { Document, Download, EditPen, Files } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { getErrorMessage } from '@/api/client'
+import { taskApi } from '@/api/tasks'
 import ParseResultCompare from '@/components/ParseResultCompare.vue'
+import ResultEditor from '@/components/ResultEditor.vue'
 import ResultViewer from '@/components/ResultViewer.vue'
+import SourceTextDrawer from '@/components/SourceTextDrawer.vue'
 import type { ParseResultRecord } from '@/types/results'
+import type { TaskFile } from '@/types/task'
 import { formatDate } from '@/utils/format'
 
 type ViewMode = 'single' | 'compare'
@@ -12,12 +17,19 @@ type ViewMode = 'single' | 'compare'
 const MAX_COMPARE_COUNT = 4
 
 const props = defineProps<{
+  taskId?: string
   record: ParseResultRecord | null
   loading?: boolean
   history?: ParseResultRecord[]
+  files?: TaskFile[]
 }>()
 
+const emit = defineEmits<{ saved: []; export: [] }>()
+
 const mode = ref<ViewMode>('single')
+const editMode = ref(false)
+const sourceVisible = ref(false)
+const sourceQuery = ref('')
 const selectedId = ref<string | null>(props.record?.id ?? null)
 const compareSelectedIds = ref<string[]>([])
 
@@ -99,6 +111,10 @@ function pillTitle(item: ParseResultRecord): string {
 }
 
 function toggleVersion(item: ParseResultRecord): void {
+  if (editMode.value) {
+    ElMessage.warning('请先取消编辑再切换版本')
+    return
+  }
   if (mode.value === 'single') {
     selectedId.value = item.id
     return
@@ -116,7 +132,31 @@ function toggleVersion(item: ParseResultRecord): void {
 }
 
 function switchMode(next: ViewMode): void {
+  if (next === 'compare') editMode.value = false
   mode.value = next
+}
+
+function handleLocate(text: string): void {
+  sourceQuery.value = text
+  sourceVisible.value = true
+}
+
+async function saveCorrections(
+  data: Record<string, unknown>,
+  rawSummary: string,
+): Promise<void> {
+  if (!props.taskId || !displayedRecord.value) return
+  try {
+    await taskApi.updateParseResult(props.taskId, displayedRecord.value.id, {
+      data,
+      raw_summary: rawSummary.trim() || null,
+    })
+    editMode.value = false
+    ElMessage.success('解析结果已修正')
+    emit('saved')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  }
 }
 </script>
 
@@ -156,6 +196,37 @@ function switchMode(next: ViewMode): void {
           <span>对比</span>
         </button>
       </div>
+      <div class="viewer-actions">
+        <el-button
+          v-if="mode === 'single' && displayedRecord?.status === 'success' && !editMode"
+          size="small"
+          :icon="Download"
+          @click="emit('export')"
+        >
+          导出报告
+        </el-button>
+        <el-button
+          v-if="mode === 'single' && displayedRecord?.status === 'success' && !editMode"
+          size="small"
+          :icon="Document"
+          @click="sourceVisible = true"
+        >
+          原文对照
+        </el-button>
+        <el-button
+          v-if="mode === 'single' && displayedRecord?.status === 'success' && !editMode"
+          size="small"
+          type="primary"
+          plain
+          :icon="EditPen"
+          @click="editMode = true"
+        >
+          修正字段
+        </el-button>
+        <el-button v-if="editMode" size="small" @click="editMode = false">
+          取消编辑
+        </el-button>
+      </div>
     </div>
 
     <template v-if="mode === 'single'">
@@ -188,13 +259,22 @@ function switchMode(next: ViewMode): void {
         show-icon
       />
 
+      <ResultEditor
+        v-if="editMode && displayedRecord?.status === 'success' && result"
+        :template="result.template"
+        :data="result.data"
+        :summary="result.raw_summary"
+        @save="saveCorrections"
+      />
+
       <ResultViewer
-        v-if="displayedRecord?.status === 'success' && result"
+        v-else-if="displayedRecord?.status === 'success' && result"
         :template="result.template"
         :data="result.data"
         :summary="result.raw_summary"
         :confidence="result.confidence"
         :generated-at="generatedAt"
+        :locate="handleLocate"
       />
 
       <div v-if="!displayedRecord" class="empty-block">
@@ -211,6 +291,14 @@ function switchMode(next: ViewMode): void {
         />
       </div>
     </template>
+
+    <SourceTextDrawer
+      v-model="sourceVisible"
+      :task-id="props.taskId || ''"
+      :parse-result-id="displayedRecord?.status === 'success' ? displayedRecord.id : null"
+      :highlight="sourceQuery"
+      :files="props.files"
+    />
   </div>
 </template>
 
@@ -345,6 +433,13 @@ function switchMode(next: ViewMode): void {
 .mode-segment button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.viewer-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .rejected-banner {

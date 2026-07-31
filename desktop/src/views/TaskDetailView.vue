@@ -26,6 +26,7 @@ import type { MatchResultRecord, ParseResultRecord } from '@/types/results'
 import type { TaskDetail, TaskFile } from '@/types/task'
 import type { ParseTemplateRecord } from '@/types/template'
 import { formatDate, formatFileSize } from '@/utils/format'
+import { getStoredBackendUrl, normalizeBackendUrl } from '@/utils/settings'
 
 const route = useRoute()
 const router = useRouter()
@@ -49,6 +50,11 @@ const rejectTemplateId = ref('')
 const templates = ref<ParseTemplateRecord[]>([])
 const templatesLoading = ref(false)
 let pollTimer: number | null = null
+
+const exportUrl = computed(() => {
+  if (!parseRecord.value) return null
+  return `${normalizeBackendUrl(getStoredBackendUrl())}/api/v1/tasks/${taskId.value}/export`
+})
 
 const isWaitingConfirm = computed(() =>
   agentStatus.value?.is_waiting_confirmation || task.value?.status === 'waiting_confirm',
@@ -242,6 +248,19 @@ async function downloadFile(file: TaskFile): Promise<void> {
   }
 }
 
+async function exportReport(): Promise<void> {
+  if (!exportUrl.value) return
+  try {
+    if (isTauri()) {
+      await openUrl(exportUrl.value)
+    } else {
+      window.open(exportUrl.value, '_blank', 'noopener,noreferrer')
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  }
+}
+
 function updatePolling(): void {
   if (pollTimer !== null) {
     window.clearInterval(pollTimer)
@@ -269,7 +288,7 @@ onBeforeUnmount(() => {
     <template v-if="task">
       <header class="detail-header">
         <div class="detail-title-block">
-          <el-button text :icon="ArrowLeft" class="back-button" @click="router.push('/')">返回任务列表</el-button>
+          <el-button text :icon="ArrowLeft" class="back-button" @click="router.push('/tasks')">返回任务列表</el-button>
           <div class="title-line">
             <h1 class="page-title">{{ task.project_name }}</h1>
             <StatusTag :status="task.status" />
@@ -281,6 +300,14 @@ onBeforeUnmount(() => {
         </div>
         <div class="page-actions detail-actions">
           <el-button :icon="Refresh" :loading="refreshing" @click="refreshAll(true)">刷新</el-button>
+          <el-button
+            v-if="parseRecord"
+            :icon="Download"
+            :disabled="!exportUrl"
+            @click="exportReport"
+          >
+            导出报告
+          </el-button>
           <el-button
             v-if="isWaitingConfirm"
             type="warning"
@@ -373,7 +400,15 @@ onBeforeUnmount(() => {
           </el-tab-pane>
 
           <el-tab-pane label="解析结果" name="parse">
-            <ParseResultPanel :record="parseRecord" :history="parseHistory" :loading="refreshing" />
+            <ParseResultPanel
+              :task-id="taskId"
+              :record="parseRecord"
+              :history="parseHistory"
+              :files="files"
+              :loading="refreshing"
+              @saved="refreshAll"
+              @export="exportReport"
+            />
           </el-tab-pane>
 
           <el-tab-pane label="匹配结果" name="match">

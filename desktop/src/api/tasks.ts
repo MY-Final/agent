@@ -1,9 +1,14 @@
 import { agentRequestConfig, request } from './client'
 import type { HealthData } from '@/types/api'
 import type { AgentStatus } from '@/types/agent'
-import type { MatchResultRecord, ParseResultRecord } from '@/types/results'
+import type {
+  MatchResultRecord,
+  ParseResultRecord,
+  ParseSourceTextItem,
+} from '@/types/results'
 import type {
   DownloadUrlData,
+  PdfInfo,
   TaskCreateInput,
   TaskDetail,
   TaskFile,
@@ -47,6 +52,12 @@ export const taskApi = {
     request<DownloadUrlData>({
       method: 'GET',
       url: `/api/v1/tasks/${taskId}/files/${fileId}/download`,
+    }),
+
+  getPdfInfo: (taskId: string, fileId: string) =>
+    request<PdfInfo>({
+      method: 'GET',
+      url: `/api/v1/tasks/${taskId}/files/${fileId}/pdf-info`,
     }),
 
   startAgent: (taskId: string) =>
@@ -94,6 +105,23 @@ export const taskApi = {
     request<ParseResultRecord[]>({
       method: 'GET',
       url: `/api/v1/tasks/${taskId}/parse-results`,
+    }),
+
+  updateParseResult: (
+    taskId: string,
+    parseResultId: string,
+    payload: { data: Record<string, unknown>; raw_summary: string | null },
+  ) =>
+    request<ParseResultRecord>({
+      method: 'PUT',
+      url: `/api/v1/tasks/${taskId}/parse-results/${parseResultId}`,
+      data: payload,
+    }),
+
+  getSourceText: (taskId: string, parseResultId: string) =>
+    request<ParseSourceTextItem[]>({
+      method: 'GET',
+      url: `/api/v1/tasks/${taskId}/parse-results/${parseResultId}/source-text`,
     }),
 
   getMatchResult: (taskId: string) =>

@@ -4,8 +4,11 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   Collection,
   Connection,
+  DataAnalysis,
+  DataBoard,
   DocumentChecked,
   Files,
+  Medal,
   Plus,
   SetUp,
   Setting,
@@ -19,9 +22,13 @@ const settings = useSettingsStore()
 const settingsVisible = ref(false)
 
 const activeMenu = computed(() => {
+  if (route.path === '/' || route.path.startsWith('/dashboard')) return '/'
   if (route.path.startsWith('/settings')) return '/settings'
   if (route.path.startsWith('/templates')) return '/templates'
+  if (route.path.startsWith('/knowledge')) return '/knowledge'
+  if (route.path.startsWith('/stats')) return '/stats'
   if (route.path.startsWith('/tasks/new')) return '/tasks/new'
+  if (route.path.startsWith('/tasks')) return '/tasks'
   return '/'
 })
 const connectionLabel = computed(() => {
@@ -58,6 +65,15 @@ function navigate(path: string): void {
           :class="{ active: activeMenu === '/' }"
           @click="navigate('/')"
         >
+          <el-icon><DataBoard /></el-icon>
+          <span>工作台</span>
+        </button>
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: activeMenu === '/tasks' }"
+          @click="navigate('/tasks')"
+        >
           <el-icon><Files /></el-icon>
           <span>任务列表</span>
         </button>
@@ -72,6 +88,24 @@ function navigate(path: string): void {
         </button>
 
         <span class="nav-label nav-label-secondary">配置</span>
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: activeMenu === '/stats' }"
+          @click="navigate('/stats')"
+        >
+          <el-icon><DataAnalysis /></el-icon>
+          <span>统计与成本</span>
+        </button>
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: activeMenu === '/knowledge' }"
+          @click="navigate('/knowledge')"
+        >
+          <el-icon><Medal /></el-icon>
+          <span>资质知识库</span>
+        </button>
         <button
           type="button"
           class="nav-item"

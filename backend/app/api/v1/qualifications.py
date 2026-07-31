@@ -2,7 +2,7 @@ import uuid
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
@@ -15,6 +15,7 @@ from app.schemas.qualification import (
     CompanyProfileCreate,
     CompanyProfileRead,
     CompanyProfileUpdate,
+    ExpiryWarningsRead,
     PerformanceListData,
     PerformanceRecordCreate,
     PerformanceRecordRead,
@@ -23,6 +24,7 @@ from app.schemas.qualification import (
     PersonnelCertificateRead,
     PersonnelCertificateUpdate,
     PersonnelListData,
+    QualificationImportResult,
     QualificationCertificateCreate,
     QualificationCertificateRead,
     QualificationCertificateUpdate,
@@ -35,6 +37,34 @@ router = APIRouter(prefix="/qualifications", tags=["公司资质知识库"])
 SessionDep = Annotated[AsyncSession, Depends(get_db_session)]
 PageDep = Annotated[int, Query(ge=1)]
 PageSizeDep = Annotated[int, Query(ge=1, le=100)]
+
+
+@router.get(
+    "/expiry-warnings",
+    response_model=ApiResponse[ExpiryWarningsRead],
+    summary="获取证书/人员证书失效预警",
+)
+async def get_expiry_warnings(
+    session: SessionDep,
+) -> ApiResponse[ExpiryWarningsRead]:
+    warnings = await QualificationService.get_expiry_warnings(session)
+    return success_response(warnings)
+
+
+@router.post(
+    "/import",
+    response_model=ApiResponse[QualificationImportResult],
+    summary="Excel 批量导入公司资质知识库",
+)
+async def import_qualifications(
+    file: Annotated[UploadFile, File(...)],
+    session: SessionDep,
+) -> ApiResponse[QualificationImportResult]:
+    result = await QualificationService.import_excel(session, file)
+    message = (
+        f"导入完成：新增 {result.created} 条，失败 {result.failed} 条"
+    )
+    return success_response(result, msg=message)
 
 
 @router.post(

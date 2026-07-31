@@ -5,6 +5,12 @@ const router = createRouter({
   routes: [
     {
       path: '/',
+      name: 'dashboard',
+      component: () => import('@/views/DashboardView.vue'),
+      meta: { title: '工作台' },
+    },
+    {
+      path: '/tasks',
       name: 'tasks',
       component: () => import('@/views/TaskListView.vue'),
       meta: { title: '任务列表' },
@@ -26,6 +32,18 @@ const router = createRouter({
       name: 'templates',
       component: () => import('@/views/TemplatesView.vue'),
       meta: { title: '解析模板' },
+    },
+    {
+      path: '/knowledge',
+      name: 'knowledge',
+      component: () => import('@/views/KnowledgeBaseView.vue'),
+      meta: { title: '资质知识库' },
+    },
+    {
+      path: '/stats',
+      name: 'stats',
+      component: () => import('@/views/StatsView.vue'),
+      meta: { title: '统计与成本' },
     },
     {
       path: '/settings',

@@ -55,6 +55,9 @@ class TaskParseResult(Base):
         server_default="false",
     )
     reject_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_texts: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[ParseResultStatus] = mapped_column(
         Enum(

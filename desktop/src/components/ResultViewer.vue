@@ -28,6 +28,7 @@ const props = defineProps<{
   summary?: string | null
   confidence?: number | null
   generatedAt?: string | null
+  locate?: (text: string) => void
 }>()
 
 const iconRegistry: Record<string, Component> = {
@@ -201,9 +202,19 @@ const gridColumns = { xs: 1, sm: 1, md: 2, lg: 3 }
             <template #default="scope">
               <span v-if="column.variant === 'stack'" class="rv-stack">
                 <span>{{ formatValue(columnValue(scope.row, column)) }}</span>
-                <small v-if="stackSecondary(scope.row, column)">
-                  {{ column.secondary_prefix ? `${column.secondary_prefix}：` : '' }}
-                  {{ stackSecondary(scope.row, column) }}
+                <small v-if="stackSecondary(scope.row, column)" class="rv-stack-secondary">
+                  <span>
+                    {{ column.secondary_prefix ? `${column.secondary_prefix}：` : '' }}
+                    {{ stackSecondary(scope.row, column) }}
+                  </span>
+                  <button
+                    v-if="locate"
+                    type="button"
+                    class="rv-locate"
+                    @click="locate(stackSecondary(scope.row, column) as string)"
+                  >
+                    定位原文
+                  </button>
                 </small>
               </span>
               <el-tag
@@ -435,10 +446,31 @@ const gridColumns = { xs: 1, sm: 1, md: 2, lg: 3 }
   line-height: 1.6;
 }
 
-.rv-stack small {
+.rv-stack-secondary {
+  display: flex;
   margin-top: 5px;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.rv-stack-secondary > span {
   color: var(--text-tertiary);
   line-height: 1.5;
+}
+
+.rv-locate {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary-color);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.rv-locate:hover {
+  text-decoration: underline;
 }
 
 .rv-muted {
