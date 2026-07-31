@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
+  Box,
   CircleCheck,
+  Coin,
   Connection,
   Delete,
   Edit,
@@ -14,6 +16,7 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getErrorMessage } from '@/api/client'
+import { runtimeApi } from '@/api/runtime'
 import { llmSettingsApi } from '@/api/settings'
 import LLMProviderDialog from '@/components/LLMProviderDialog.vue'
 import { useSettingsStore } from '@/stores/settings'
@@ -22,6 +25,10 @@ import type {
   LLMProviderCreateInput,
   LLMProviderUpdateInput,
 } from '@/types/llm'
+import type {
+  RuntimeHealthMap,
+  RuntimeSettingsInput,
+} from '@/types/runtime'
 import { formatDate } from '@/utils/format'
 
 const settings = useSettingsStore()
@@ -32,10 +39,128 @@ const actionId = ref<string | null>(null)
 
 const currentConfig = computed(() => settings.currentLLMConfig)
 const sourceLabel = computed(() => currentConfig.value?.source === 'database' ? '数据库默认配置' : '.env 备用配置')
+const activeSourceValue = computed<string>(() => {
+  if (currentConfig.value?.source === 'database' && currentConfig.value.provider_id) {
+    return currentConfig.value.provider_id
+  }
+  return 'env'
+})
 const currentProviderName = computed(() => {
   if (!currentConfig.value) return '-'
   return currentConfig.value.provider_name || (currentConfig.value.source === 'env' ? '环境变量配置' : '未命名提供商')
 })
+
+async function switchActiveProvider(value: string): Promise<void> {
+  if (value === activeSourceValue.value) return
+  actionId.value = value
+  try {
+    if (value === 'env') {
+      const currentDefault = settings.llmProviders.find((item) => item.is_default)
+      if (currentDefault) {
+        await llmSettingsApi.updateProvider(currentDefault.id, { is_default: false })
+      }
+      ElMessage.success('已切换到环境变量配置，后续 AI 调用使用后端 .env')
+    } else {
+      await llmSettingsApi.setDefault(value)
+      const provider = settings.llmProviders.find((item) => item.id === value)
+      ElMessage.success(`已切换到「${provider?.name ?? '该提供商'}」，后续 AI 调用生效`)
+    }
+    await settings.loadLLMSettings()
+    if (value === 'env' && !settings.currentLLMConfig?.is_configured) {
+      ElMessage.warning('已切换到环境变量配置，但缺少 API Key，AI 调用暂不可用；请检查后端 .env 或系统环境变量')
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    actionId.value = null
+  }
+}
+
+const runtimeForm = reactive<RuntimeSettingsInput>({
+  postgres: {
+    host: '127.0.0.1',
+    port: 5432,
+    user: 'postgres',
+    password: null,
+    database: '',
+  },
+  redis: { host: '127.0.0.1', port: 6379, password: null, db: 0 },
+  minio: {
+    endpoint: 'localhost:9000',
+    access_key: 'minioadmin',
+    secret_key: null,
+    bucket: 'tender-files',
+    secure: false,
+  },
+})
+const runtimeHealth = ref<RuntimeHealthMap | null>(null)
+const runtimeTesting = ref(false)
+const runtimeSaving = ref(false)
+const runtimeConfigFile = ref('')
+
+async function loadRuntimeSettings(): Promise<void> {
+  try {
+    const data = await runtimeApi.get()
+    runtimeForm.postgres = { ...data.postgres, password: null }
+    runtimeForm.redis = { ...data.redis, password: null }
+    runtimeForm.minio = { ...data.minio, secret_key: null }
+    runtimeHealth.value = data.health
+    runtimeConfigFile.value = data.config_file
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  }
+}
+
+function runtimePayload(): RuntimeSettingsInput {
+  return {
+    postgres: {
+      ...runtimeForm.postgres,
+      password: runtimeForm.postgres.password || null,
+    },
+    redis: { ...runtimeForm.redis, password: runtimeForm.redis.password || null },
+    minio: {
+      ...runtimeForm.minio,
+      secret_key: runtimeForm.minio.secret_key || null,
+    },
+  }
+}
+
+async function testRuntime(): Promise<void> {
+  runtimeTesting.value = true
+  try {
+    runtimeHealth.value = await runtimeApi.test(runtimePayload())
+    const failed = Object.values(runtimeHealth.value).filter((health) => !health.ok)
+    ElMessage.success(failed.length ? '测试完成，部分组件连接失败' : '全部组件连接正常')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    runtimeTesting.value = false
+  }
+}
+
+async function saveRuntime(): Promise<void> {
+  runtimeSaving.value = true
+  try {
+    const data = await runtimeApi.save(runtimePayload())
+    runtimeHealth.value = data.health
+    runtimeConfigFile.value = data.config_file
+    ElMessage.success('基础设施配置已保存，重启后端后生效')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    runtimeSaving.value = false
+  }
+}
+
+function healthInfo(
+  key: keyof RuntimeHealthMap,
+): { label: string; type: 'success' | 'danger' | 'info'; message: string | null } {
+  const health = runtimeHealth.value?.[key]
+  if (!health) return { label: '未测试', type: 'info', message: null }
+  return health.ok
+    ? { label: '连接正常', type: 'success', message: health.message }
+    : { label: '连接失败', type: 'danger', message: health.message }
+}
 
 async function loadSettings(showMessage = false): Promise<void> {
   try {
@@ -79,7 +204,7 @@ async function setDefault(provider: LLMProvider): Promise<void> {
   actionId.value = provider.id
   try {
     await llmSettingsApi.setDefault(provider.id)
-    ElMessage.success(`“${provider.name}”已设为默认提供商`)
+    ElMessage.success(`“${provider.name}”已设为当前使用`)
     await settings.loadLLMSettings()
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
@@ -126,7 +251,10 @@ async function deleteProvider(provider: LLMProvider): Promise<void> {
   }
 }
 
-onMounted(() => loadSettings())
+onMounted(() => {
+  void loadSettings()
+  void loadRuntimeSettings()
+})
 </script>
 
 <template>
@@ -181,6 +309,27 @@ onMounted(() => loadSettings())
         </dl>
       </div>
 
+      <div v-if="currentConfig" class="active-switch">
+        <div class="active-switch-control">
+          <span class="active-switch-label">当前使用</span>
+          <el-select
+            :model-value="activeSourceValue"
+            class="active-switch-select"
+            :loading="actionId !== null"
+            @update:model-value="switchActiveProvider"
+          >
+            <el-option
+              v-for="provider in settings.llmProviders.filter((item) => item.is_enabled)"
+              :key="provider.id"
+              :value="provider.id"
+              :label="provider.name"
+            />
+            <el-option value="env" label="环境变量配置（.env）" />
+          </el-select>
+        </div>
+        <small>切换立即生效，影响后续所有 AI 调用；已完成的解析不会重新生成。</small>
+      </div>
+
       <el-empty v-else-if="!settings.llmLoading" description="暂时无法读取当前大模型配置" :image-size="72" />
     </section>
 
@@ -230,11 +379,11 @@ onMounted(() => loadSettings())
             />
           </template>
         </el-table-column>
-        <el-table-column label="默认配置" width="130" align="center">
+        <el-table-column label="当前使用" width="140" align="center">
           <template #default="scope">
             <el-tag v-if="scope.row.is_default" type="success" effect="plain">
               <el-icon><CircleCheck /></el-icon>
-              当前默认
+              正在使用
             </el-tag>
             <el-button
               v-else
@@ -244,7 +393,7 @@ onMounted(() => loadSettings())
               :disabled="!scope.row.is_enabled || actionId === scope.row.id"
               @click="setDefault(scope.row)"
             >
-              设为默认
+              设为当前使用
             </el-button>
           </template>
         </el-table-column>
@@ -280,6 +429,175 @@ onMounted(() => loadSettings())
           </el-empty>
         </template>
       </el-table>
+    </section>
+
+    <section class="content-surface runtime-section">
+      <div class="section-heading runtime-heading">
+        <div>
+          <h2 class="section-title">基础设施配置</h2>
+          <p class="section-subtitle">
+            PostgreSQL、Redis、MinIO 的连接信息，保存后写入后端目录的运行时配置文件，重启后端生效。
+          </p>
+        </div>
+        <div class="runtime-actions">
+          <el-button :icon="Connection" :loading="runtimeTesting" @click="testRuntime">
+            测试连接
+          </el-button>
+          <el-button type="primary" :loading="runtimeSaving" @click="saveRuntime">
+            保存配置
+          </el-button>
+        </div>
+      </div>
+
+      <div class="runtime-grid">
+        <div class="runtime-card">
+          <header class="runtime-card-head">
+            <span class="runtime-card-icon"><el-icon><Coin /></el-icon></span>
+            <div>
+              <h3>PostgreSQL</h3>
+              <p>业务数据与 LangGraph 检查点</p>
+            </div>
+            <el-tag :type="healthInfo('postgres').type" size="small" effect="plain">
+              {{ healthInfo('postgres').label }}
+            </el-tag>
+          </header>
+          <div class="runtime-form-grid">
+            <label class="runtime-field">
+              <span>主机</span>
+              <el-input v-model="runtimeForm.postgres.host" placeholder="127.0.0.1" />
+            </label>
+            <label class="runtime-field">
+              <span>端口</span>
+              <el-input-number
+                v-model="runtimeForm.postgres.port"
+                :min="1"
+                :max="65535"
+                :controls="false"
+                class="runtime-number"
+              />
+            </label>
+            <label class="runtime-field">
+              <span>用户名</span>
+              <el-input v-model="runtimeForm.postgres.user" placeholder="postgres" />
+            </label>
+            <label class="runtime-field">
+              <span>密码（留空沿用已有配置）</span>
+              <el-input
+                v-model="runtimeForm.postgres.password"
+                type="password"
+                show-password
+                placeholder="未设置密码可留空"
+              />
+            </label>
+            <label class="runtime-field runtime-field-wide">
+              <span>数据库名</span>
+              <el-input v-model="runtimeForm.postgres.database" placeholder="tender" />
+            </label>
+          </div>
+          <p v-if="healthInfo('postgres').message" class="runtime-health-text">
+            {{ healthInfo('postgres').message }}
+          </p>
+        </div>
+
+        <div class="runtime-card">
+          <header class="runtime-card-head">
+            <span class="runtime-card-icon redis"><el-icon><Connection /></el-icon></span>
+            <div>
+              <h3>Redis</h3>
+              <p>缓存与连接预留</p>
+            </div>
+            <el-tag :type="healthInfo('redis').type" size="small" effect="plain">
+              {{ healthInfo('redis').label }}
+            </el-tag>
+          </header>
+          <div class="runtime-form-grid">
+            <label class="runtime-field">
+              <span>主机</span>
+              <el-input v-model="runtimeForm.redis.host" placeholder="127.0.0.1" />
+            </label>
+            <label class="runtime-field">
+              <span>端口</span>
+              <el-input-number
+                v-model="runtimeForm.redis.port"
+                :min="1"
+                :max="65535"
+                :controls="false"
+                class="runtime-number"
+              />
+            </label>
+            <label class="runtime-field">
+              <span>密码（留空沿用已有配置）</span>
+              <el-input
+                v-model="runtimeForm.redis.password"
+                type="password"
+                show-password
+                placeholder="无密码可留空"
+              />
+            </label>
+            <label class="runtime-field">
+              <span>数据库编号</span>
+              <el-input-number
+                v-model="runtimeForm.redis.db"
+                :min="0"
+                :max="15"
+                :controls="false"
+                class="runtime-number"
+              />
+            </label>
+          </div>
+          <p v-if="healthInfo('redis').message" class="runtime-health-text">
+            {{ healthInfo('redis').message }}
+          </p>
+        </div>
+
+        <div class="runtime-card">
+          <header class="runtime-card-head">
+            <span class="runtime-card-icon minio"><el-icon><Box /></el-icon></span>
+            <div>
+              <h3>MinIO</h3>
+              <p>标书文件与附件的对象存储</p>
+            </div>
+            <el-tag :type="healthInfo('minio').type" size="small" effect="plain">
+              {{ healthInfo('minio').label }}
+            </el-tag>
+          </header>
+          <div class="runtime-form-grid">
+            <label class="runtime-field">
+              <span>端点（不含协议）</span>
+              <el-input v-model="runtimeForm.minio.endpoint" placeholder="localhost:9000" />
+            </label>
+            <label class="runtime-field">
+              <span>Access Key</span>
+              <el-input v-model="runtimeForm.minio.access_key" placeholder="minioadmin" />
+            </label>
+            <label class="runtime-field">
+              <span>Secret Key（留空沿用已有配置）</span>
+              <el-input
+                v-model="runtimeForm.minio.secret_key"
+                type="password"
+                show-password
+                placeholder="minioadmin"
+              />
+            </label>
+            <label class="runtime-field">
+              <span>桶名称</span>
+              <el-input v-model="runtimeForm.minio.bucket" placeholder="tender-files" />
+            </label>
+            <label class="runtime-switch">
+              <span>HTTPS 安全连接</span>
+              <el-switch v-model="runtimeForm.minio.secure" />
+            </label>
+          </div>
+          <p v-if="healthInfo('minio').message" class="runtime-health-text">
+            {{ healthInfo('minio').message }}
+          </p>
+        </div>
+      </div>
+
+      <div class="runtime-foot">
+        <span>配置文件：{{ runtimeConfigFile || '未加载' }}</span>
+        <span>保存后需重启后端生效；当前运行实例的实时状态见左下角连接区域。</span>
+      </div>
     </section>
 
     <div class="settings-note">
@@ -406,6 +724,38 @@ onMounted(() => loadSettings())
   white-space: nowrap;
 }
 
+.active-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-color);
+  background: var(--surface-muted);
+}
+
+.active-switch-control {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.active-switch-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.active-switch-select {
+  width: 280px;
+}
+
+.active-switch small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
 .provider-heading {
   min-height: 66px;
 }
@@ -492,6 +842,136 @@ onMounted(() => loadSettings())
   color: var(--warning-color);
 }
 
+.runtime-section {
+  overflow: hidden;
+  margin-top: 16px;
+}
+
+.runtime-heading {
+  min-height: 76px;
+}
+
+.runtime-actions {
+  display: inline-flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+}
+
+.runtime-card {
+  min-width: 0;
+  padding: 18px;
+  border-right: 1px solid var(--border-color);
+}
+
+.runtime-card:last-child {
+  border-right: 0;
+}
+
+.runtime-card-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.runtime-card-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--primary-soft);
+  color: var(--primary-dark);
+  font-size: 17px;
+}
+
+.runtime-card-icon.redis {
+  background: var(--warning-soft);
+  color: var(--warning-color);
+}
+
+.runtime-card-icon.minio {
+  background: var(--surface-strong);
+  color: var(--info-color);
+}
+
+.runtime-card-head h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.runtime-card-head p {
+  margin: 3px 0 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.runtime-card-head .el-tag {
+  margin-left: auto;
+}
+
+.runtime-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.runtime-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.runtime-field > span,
+.runtime-switch > span {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.runtime-field-wide {
+  grid-column: 1 / -1;
+}
+
+.runtime-number {
+  width: 100%;
+}
+
+.runtime-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 16px;
+}
+
+.runtime-health-text {
+  margin: 12px 0 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.runtime-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-color);
+  background: var(--surface-muted);
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
 @media (max-width: 1180px) {
   .runtime-layout {
     grid-template-columns: 1fr;
@@ -512,6 +992,19 @@ onMounted(() => loadSettings())
 
   .runtime-facts > div:nth-child(-n + 2) {
     border-bottom: 1px solid var(--border-color);
+  }
+
+  .runtime-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-card {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .runtime-card:last-child {
+    border-bottom: 0;
   }
 }
 </style>

@@ -4,6 +4,12 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
+from app.core.runtime_config import (
+    build_database_url,
+    build_redis_url,
+    load_runtime_config,
+)
+
 
 class Settings(BaseSettings):
     """从环境变量或 .env 文件加载应用配置。"""
@@ -117,3 +123,25 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+# 桌面端系统设置保存的运行时配置优先于 .env。
+# 引擎等基础设施对象都在导入时基于 settings 创建，因此这里在导入阶段统一覆盖。
+_RUNTIME = load_runtime_config()
+if _RUNTIME:
+    _postgres = _RUNTIME.get("postgres") or {}
+    if _postgres.get("host") and _postgres.get("database"):
+        settings.database_url = build_database_url(_postgres)
+    _redis = _RUNTIME.get("redis") or {}
+    if _redis.get("host"):
+        settings.redis_url = build_redis_url(_redis)
+    _minio = _RUNTIME.get("minio") or {}
+    if _minio.get("endpoint"):
+        settings.minio_endpoint = str(_minio["endpoint"])
+        settings.minio_access_key = str(
+            _minio.get("access_key") or settings.minio_access_key
+        )
+        settings.minio_secret_key = str(
+            _minio.get("secret_key") or settings.minio_secret_key
+        )
+        settings.minio_bucket = str(_minio.get("bucket") or settings.minio_bucket)
+        settings.minio_secure = bool(_minio.get("secure", settings.minio_secure))

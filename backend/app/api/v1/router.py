@@ -5,6 +5,7 @@ from app.api.v1 import (
     dashboard,
     files,
     qualifications,
+    runtime,
     settings,
     skills,
     stats,
@@ -23,3 +24,4 @@ api_router.include_router(agent.router)
 api_router.include_router(settings.router)
 api_router.include_router(templates.router)
 api_router.include_router(stats.router)
+api_router.include_router(runtime.router)

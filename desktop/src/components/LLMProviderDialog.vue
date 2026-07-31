@@ -24,6 +24,70 @@ interface ProviderForm {
   temperature: number
 }
 
+interface ProviderPreset {
+  key: string
+  name: string
+  baseUrl: string
+  note: string
+}
+
+const PROVIDER_PRESETS: ProviderPreset[] = [
+  {
+    key: 'openai',
+    name: 'OpenAI',
+    baseUrl: 'https://api.openai.com/v1',
+    note: '官方 API',
+  },
+  {
+    key: 'deepseek',
+    name: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    note: '高性价比',
+  },
+  {
+    key: 'volcengine',
+    name: '火山方舟',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    note: '豆包/DeepSeek，模型 ID 可填接入点 ep-xxx',
+  },
+  {
+    key: 'zhipu',
+    name: '智谱 AI',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    note: 'GLM 系列',
+  },
+  {
+    key: 'dashscope',
+    name: '阿里云百炼',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    note: '通义千问',
+  },
+  {
+    key: 'hunyuan',
+    name: '腾讯混元',
+    baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
+    note: '混元大模型',
+  },
+  {
+    key: 'qianfan',
+    name: '百度千帆',
+    baseUrl: 'https://qianfan.baidubce.com/v2',
+    note: '文心系列',
+  },
+  {
+    key: 'moonshot',
+    name: 'Moonshot Kimi',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    note: 'Kimi',
+  },
+  {
+    key: 'siliconflow',
+    name: '硅基流动',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    note: '多模型聚合',
+  },
+]
+
 const props = defineProps<{
   provider: LLMProvider | null
   saving: boolean
@@ -36,6 +100,7 @@ const emit = defineEmits<{
 const visible = defineModel<boolean>('visible', { required: true })
 const formRef = ref<FormInstance>()
 const form = reactive<ProviderForm>(createEmptyForm())
+const selectedPreset = ref<ProviderPreset | null>(null)
 const modelOptions = ref<string[]>([])
 const loadingModels = ref(false)
 const testingConnection = ref(false)
@@ -89,12 +154,23 @@ const rules: FormRules<ProviderForm> = {
 
 watch(visible, async (value) => {
   if (!value) return
+  selectedPreset.value = null
   Object.assign(form, props.provider ? formFromProvider(props.provider) : createEmptyForm())
   modelOptions.value = form.defaultModel ? [form.defaultModel] : []
   testResult.value = null
   await nextTick()
   formRef.value?.clearValidate()
 })
+
+function applyPreset(preset: ProviderPreset): void {
+  selectedPreset.value = preset
+  form.name = preset.name
+  form.baseUrl = preset.baseUrl
+  form.defaultModel = ''
+  modelOptions.value = []
+  testResult.value = null
+  void formRef.value?.clearValidate(['baseUrl'])
+}
 
 watch(() => form.isEnabled, (enabled) => {
   if (!enabled) form.isDefault = false
@@ -244,6 +320,26 @@ async function submit(): Promise<void> {
     :close-on-click-modal="!saving"
     :close-on-press-escape="!saving"
   >
+    <div v-if="!isEditing" class="preset-section">
+      <div class="preset-head">
+        <strong>从常用平台快速选择</strong>
+        <small>点击自动填入服务地址，模型请点「获取模型」拉取最新列表</small>
+      </div>
+      <div class="preset-list">
+        <button
+          v-for="preset in PROVIDER_PRESETS"
+          :key="preset.key"
+          type="button"
+          class="preset-chip"
+          :class="{ active: selectedPreset?.key === preset.key }"
+          @click="applyPreset(preset)"
+        >
+          <span class="preset-name">{{ preset.name }}</span>
+          <small>{{ preset.note }}</small>
+        </button>
+      </div>
+    </div>
+
     <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent="submit">
       <div class="form-grid">
         <el-form-item label="显示名称" prop="name">
@@ -330,8 +426,8 @@ async function submit(): Promise<void> {
         </div>
         <div class="switch-row">
           <div>
-            <strong>保存后设为默认</strong>
-            <small>系统始终只保留一个默认提供商。</small>
+            <strong>保存后设为当前使用</strong>
+            <small>系统始终只保留一个当前使用配置。</small>
           </div>
           <el-switch v-model="form.isDefault" :disabled="!form.isEnabled" />
         </div>
@@ -374,6 +470,75 @@ async function submit(): Promise<void> {
 </template>
 
 <style scoped>
+.preset-section {
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.preset-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.preset-head strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.preset-head small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.preset-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.preset-chip {
+  display: grid;
+  gap: 3px;
+  min-height: 52px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: var(--surface-color);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.preset-chip:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-strong);
+}
+
+.preset-chip.active {
+  border-color: var(--primary-color);
+  background: var(--primary-soft);
+}
+
+.preset-name {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.preset-chip small {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
