@@ -19,7 +19,7 @@ from pydantic import ValidationError
 
 from app.core.exceptions import AppException
 from app.schemas.parse_template import TemplateSuggestion
-from app.schemas.skills.parse import ParseResult, ParseTemplate
+from app.schemas.skills.parse import ParseResult, ParseTemplate, SectionKind
 from app.services.llm_provider_service import LLMRuntimeConfig, get_current_llm_config
 from app.services.llm_usage_service import LLMUsageService
 from app.skills.parse_template import (
@@ -236,15 +236,31 @@ class TenderLLMClient:
 
         try:
             payload = json.loads(_strip_json_fence(content))
+            data = _fill_missing_template_data(template, payload.get("data") or {})
             return ParseResult(
                 template=template,
-                data=payload.get("data") or {},
+                data=data,
                 raw_summary=payload.get("raw_summary"),
                 confidence=payload.get("confidence"),
             )
-        except (json.JSONDecodeError, ValidationError) as exc:
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "大模型返回内容不是有效 JSON：%s", content[:300]
+            )
             raise AppException(
-                "大模型返回内容未通过结构化结果校验",
+                "大模型返回内容不是有效 JSON，未通过结构化结果校验",
+                code=50212,
+                status_code=502,
+            ) from exc
+        except ValidationError as exc:
+            reason = _first_validation_error(exc)
+            logger.warning(
+                "大模型结构化结果校验失败：%s | 原始片段：%s",
+                reason,
+                content[:300],
+            )
+            raise AppException(
+                f"大模型返回内容未通过结构化结果校验：{reason}",
                 code=50212,
                 status_code=502,
             ) from exc
@@ -281,9 +297,15 @@ class TenderLLMClient:
         try:
             payload = json.loads(_strip_json_fence(content))
             suggestion = TemplateSuggestion.model_validate(payload)
-        except (json.JSONDecodeError, ValidationError) as exc:
+        except json.JSONDecodeError as exc:
             raise AppException(
-                "大模型返回的模板建议未通过校验",
+                "大模型返回的模板建议不是有效 JSON",
+                code=50222,
+                status_code=502,
+            ) from exc
+        except ValidationError as exc:
+            raise AppException(
+                f"大模型返回的模板建议未通过校验：{_first_validation_error(exc)}",
                 code=50222,
                 status_code=502,
             ) from exc
@@ -302,6 +324,37 @@ def _strip_json_fence(content: str) -> str:
         lines = stripped.splitlines()
         return "\n".join(lines[1:-1]).strip()
     return stripped
+
+
+def _first_validation_error(exc: ValidationError) -> str:
+    first = exc.errors()[0]
+    location = ".".join(str(part) for part in first.get("loc", ()))
+    message = first.get("msg", str(exc))
+    return f"{location} {message}".strip() or str(exc)
+
+
+def _fill_missing_template_data(
+    template: ParseTemplate,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    """把 LLM 漏掉的区块/字段补成默认空值，避免整份结果被误判失败。"""
+
+    filled: dict[str, Any] = dict(data or {})
+    for section in template.sections:
+        value = filled.get(section.id)
+        if value is None:
+            filled[section.id] = (
+                {}
+                if section.kind in {SectionKind.GRID, SectionKind.KEY_VALUE}
+                else []
+            )
+            continue
+        if section.kind == SectionKind.GRID and isinstance(value, dict):
+            grid = dict(value)
+            for field in section.fields:
+                grid.setdefault(field.key, None)
+            filled[section.id] = grid
+    return filled
 
 
 def _completion_options(config: LLMRuntimeConfig) -> dict[str, Any]:
