@@ -10,7 +10,14 @@ class PromptTemplateTests(unittest.TestCase):
     def test_bundled_templates_load_with_expected_placeholders(self) -> None:
         self.assertEqual(
             set(PROMPTS),
-            {"extract_system", "extract_user", "suggest_system", "suggest_user"},
+            {
+                "extract_system",
+                "extract_user",
+                "suggest_system",
+                "suggest_user",
+                "chat_system",
+                "chat_user",
+            },
         )
         self.assertIn("禁止", PROMPTS["extract_system"].content)
         self.assertIn(

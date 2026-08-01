@@ -5,8 +5,9 @@ import uuid
 from types import SimpleNamespace
 from unittest import mock
 
-from openai import BadRequestError
+from openai import APIError, BadRequestError
 
+from app.core.exceptions import AppException
 from app.core.llm_stream import reset_llm_stream_handlers, set_llm_stream_handlers
 from app.core.sse import EventBridge, sse_event
 from app.schemas.parse_template import TemplateSuggestion
@@ -35,6 +36,214 @@ def _chunk(piece: str | None = None, usage: SimpleNamespace | None = None) -> Si
 
 
 class StreamContentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_plain_stream_omits_response_format(self) -> None:
+        collected: list[str] = []
+
+        async def collect(piece: str) -> None:
+            collected.append(piece)
+
+        captured: dict[str, object] = {}
+
+        async def create(*_args: object, **_kwargs: object) -> object:
+            captured["kwargs"] = _kwargs
+            return _async_chunks(_chunk("你"), _chunk("好"))
+
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+            close=mock.AsyncMock(),
+        )
+        with (
+            mock.patch("app.skills.llm.AsyncOpenAI", return_value=client),
+            mock.patch(
+                "app.skills.llm.get_current_llm_config",
+                new=mock.AsyncMock(return_value=_runtime_config()),
+            ),
+            mock.patch(
+                "app.skills.llm.LLMUsageService.record_usage",
+                new=mock.AsyncMock(),
+            ),
+        ):
+            content = await TenderLLMClient().chat(
+                system_prompt="系统提示",
+                history=[
+                    {"role": "user", "content": "之前的问题"},
+                    {"role": "assistant", "content": "之前的回答"},
+                ],
+                context="结构化解析结果",
+                question="项目工期是多久？",
+                on_delta=collect,
+            )
+
+        self.assertEqual(content, "你好")
+        self.assertEqual(collected, ["你", "好"])
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        self.assertNotIn("response_format", kwargs)
+        self.assertIs(kwargs["stream"], True)
+        messages = kwargs["messages"]
+        assert isinstance(messages, list)
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual(messages[1]["role"], "user")
+        self.assertIn("项目工期是多久？", messages[-1]["content"])
+
+    async def test_stream_api_error_maps_to_friendly_message(self) -> None:
+        collected: list[str] = []
+
+        async def collect(piece: str) -> None:
+            collected.append(piece)
+
+        async def failing_stream() -> object:
+            yield _chunk("部分内容")
+            raise APIError(
+                "Upstream service temporarily unavailable",
+                mock.Mock(),
+                body=None,
+            )
+
+        async def create(*_args: object, **_kwargs: object) -> object:
+            return failing_stream()
+
+        config = _runtime_config()
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+            close=mock.AsyncMock(),
+        )
+        with mock.patch(
+            "app.skills.llm.LLMUsageService.record_usage",
+            new=mock.AsyncMock(),
+        ):
+            with self.assertRaises(AppException) as ctx:
+                await TenderLLMClient()._stream_content(
+                    config,
+                    client,
+                    [{"role": "user", "content": "hi"}],
+                    "tender_parse_result",
+                    {},
+                    purpose="parse",
+                    task_id=None,
+                    on_delta=collect,
+                )
+
+        self.assertEqual(ctx.exception.code, 50218)
+        self.assertIn("暂时不可用", ctx.exception.message)
+        # 已经输出过增量，不触发重试。
+        self.assertEqual(collected, ["部分内容"])
+
+    async def test_stream_api_error_before_content_falls_back_to_non_streaming(self) -> None:
+        collected: list[str] = []
+
+        async def collect(piece: str) -> None:
+            collected.append(piece)
+
+        async def failing_stream() -> object:
+            if False:
+                yield None
+            raise APIError(
+                "Upstream service temporarily unavailable",
+                mock.Mock(),
+                body=None,
+            )
+
+        full_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="完整结果"))
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+        remaining = [failing_stream, full_response]
+
+        async def create(*_args: object, **_kwargs: object) -> object:
+            step = remaining.pop(0)
+            if callable(step):
+                return step()
+            return step
+
+        config = _runtime_config()
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+            close=mock.AsyncMock(),
+        )
+        with mock.patch(
+            "app.skills.llm.LLMUsageService.record_usage",
+            new=mock.AsyncMock(),
+        ):
+            content = await TenderLLMClient()._stream_content(
+                config,
+                client,
+                [{"role": "user", "content": "hi"}],
+                "tender_parse_result",
+                {},
+                purpose="parse",
+                task_id=None,
+                on_delta=collect,
+            )
+
+        self.assertEqual(content, "完整结果")
+        self.assertEqual(collected, ["完整结果"])
+        self.assertEqual(len(remaining), 0)
+
+    async def test_retries_transient_failures(self) -> None:
+        payload = json.dumps(
+            {
+                "data": {
+                    "overview": {"project_name": "测试项目"},
+                    "qualifications": [],
+                    "scoring_method": {},
+                    "key_dates": {},
+                    "disqualification_items": [],
+                    "other_key_points": [],
+                },
+                "raw_summary": None,
+                "confidence": 0.9,
+            },
+            ensure_ascii=False,
+        )
+        full_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content=payload))
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+        remaining = [
+            APIError(
+                "Upstream service temporarily unavailable",
+                mock.Mock(),
+                body=None,
+            ),
+            APIError(
+                "Upstream service temporarily unavailable",
+                mock.Mock(),
+                body=None,
+            ),
+            full_response,
+        ]
+
+        async def create(*_args: object, **_kwargs: object) -> object:
+            step = remaining.pop(0)
+            if isinstance(step, Exception):
+                raise step
+            return step
+
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+            close=mock.AsyncMock(),
+        )
+        with (
+            mock.patch("app.skills.llm.AsyncOpenAI", return_value=client),
+            mock.patch(
+                "app.skills.llm.get_current_llm_config",
+                new=mock.AsyncMock(return_value=_runtime_config()),
+            ),
+            mock.patch(
+                "app.skills.llm.LLMUsageService.record_usage",
+                new=mock.AsyncMock(),
+            ),
+        ):
+            result = await TenderLLMClient().extract("测试标书原文", SEED_PARSE_TEMPLATE)
+
+        self.assertEqual(result.project_name, "测试项目")
+        self.assertEqual(len(remaining), 0)
+
     async def test_extract_with_context_callback_does_not_recursively_stream(self) -> None:
         """回归：上下文钩子已设置且提供商拒绝全部流式格式时，降级非流式一次完成。"""
 

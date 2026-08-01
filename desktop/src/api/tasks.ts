@@ -70,6 +70,9 @@ export const taskApi = {
   startAgentStream: (taskId: string) =>
     streamSse(`/api/v1/tasks/${taskId}/agent/start/stream`, {}),
 
+  chatAgentStream: (taskId: string, question: string) =>
+    streamSse(`/api/v1/tasks/${taskId}/agent/chat/stream`, { question }),
+
   getAgentStatus: (taskId: string) =>
     request<AgentStatus>({ method: 'GET', url: `/api/v1/tasks/${taskId}/agent/status` }),
 

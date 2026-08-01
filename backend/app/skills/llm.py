@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -8,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from openai import (
+    APIError,
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
@@ -36,6 +38,10 @@ from app.skills.parse_template import (
 
 
 logger = logging.getLogger(__name__)
+
+# 瞬时性故障（限流 / 5xx / 上游暂不可用）允许自动重试。
+_RETRYABLE_ERROR_CODES = {50215, 50217, 50218}
+_MAX_RETRIES = 2
 
 
 @dataclass(slots=True)
@@ -79,36 +85,64 @@ class TenderLLMClient:
         client: AsyncOpenAI,
         messages: list[dict[str, str]],
         schema_name: str,
-        schema: dict[str, Any],
+        schema: dict[str, Any] | None,
         *,
         purpose: str,
         task_id: uuid.UUID | None = None,
         on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
-        """发起结构化输出请求：有流式回调时走流式，否则走一次性请求。"""
+        """发起请求：有流式回调时走流式，否则走一次性请求。
+
+        瞬时性故障（限流、5xx、上游暂不可用）自动重试；
+        流式场景下若已向客户端输出过增量，则不再重试，避免内容重复。
+        """
 
         delta_callback = on_delta or LLM_DELTA_CALLBACK.get()
-        if delta_callback is not None:
-            return await self._stream_content(
-                config,
-                client,
-                messages,
-                schema_name,
-                schema,
-                purpose=purpose,
-                task_id=task_id,
-                on_delta=delta_callback,
-            )
+        delivered = False
 
-        return await self._request_content_once(
-            config,
-            client,
-            messages,
-            schema_name,
-            schema,
-            purpose=purpose,
-            task_id=task_id,
-        )
+        async def tracked_delta(piece: str) -> None:
+            nonlocal delivered
+            delivered = True
+            await delta_callback(piece)
+
+        for attempt in range(_MAX_RETRIES + 1):
+            delivered = False
+            try:
+                if delta_callback is not None:
+                    return await self._stream_content(
+                        config,
+                        client,
+                        messages,
+                        schema_name,
+                        schema,
+                        purpose=purpose,
+                        task_id=task_id,
+                        on_delta=tracked_delta,
+                    )
+                return await self._request_content_once(
+                    config,
+                    client,
+                    messages,
+                    schema_name,
+                    schema,
+                    purpose=purpose,
+                    task_id=task_id,
+                )
+            except AppException as exc:
+                if (
+                    exc.code not in _RETRYABLE_ERROR_CODES
+                    or attempt >= _MAX_RETRIES
+                    or delivered
+                ):
+                    raise
+                logger.warning(
+                    "大模型调用遇到瞬时故障，第 %s/%s 次重试：%s",
+                    attempt + 1,
+                    _MAX_RETRIES,
+                    exc.message,
+                )
+                await asyncio.sleep(1.0 * (attempt + 1))
+        raise RuntimeError("大模型调用重试循环异常退出")  # pragma: no cover
 
     async def _request_content_once(
         self,
@@ -116,7 +150,7 @@ class TenderLLMClient:
         client: AsyncOpenAI,
         messages: list[dict[str, str]],
         schema_name: str,
-        schema: dict[str, Any],
+        schema: dict[str, Any] | None,
         *,
         purpose: str,
         task_id: uuid.UUID | None = None,
@@ -126,24 +160,31 @@ class TenderLLMClient:
         started = time.perf_counter()
         error_message: str | None = None
         completion_options = _completion_options(config)
+        response_format: dict[str, Any] | None = None
+        if schema is not None:
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    # 动态部分由 Pydantic 做最终严格校验，
+                    # 不启用供应商侧 strict 子集限制。
+                    "strict": False,
+                    "schema": schema,
+                },
+            }
         try:
             try:
-                response = await client.chat.completions.create(
-                    model=config.default_model,
-                    messages=messages,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": schema_name,
-                            # 动态部分由 Pydantic 做最终严格校验，
-                            # 不启用供应商侧 strict 子集限制。
-                            "strict": False,
-                            "schema": schema,
-                        },
-                    },
+                request_options: dict[str, Any] = {
+                    "model": config.default_model,
+                    "messages": messages,
                     **completion_options,
-                )
+                }
+                if response_format is not None:
+                    request_options["response_format"] = response_format
+                response = await client.chat.completions.create(**request_options)
             except BadRequestError as exc:
+                if schema is None:
+                    raise
                 # 部分 OpenAI 兼容服务只实现 JSON Mode，仍以 Pydantic 做最终强校验。
                 logger.warning(
                     "当前 LLM 不支持 JSON Schema，降级使用 JSON Mode：%s",
@@ -173,6 +214,10 @@ class TenderLLMClient:
         except APIStatusError as exc:
             error_message = f"大模型服务请求失败，HTTP 状态码：{exc.status_code}"
             raise AppException(error_message, code=50217, status_code=502) from exc
+        except APIError as exc:
+            # 上游返回无法解析的错误（如 502/503 网关错误体），属于瞬时故障。
+            error_message = "大模型服务暂时不可用，请稍后重试"
+            raise AppException(error_message, code=50218, status_code=502) from exc
         finally:
             if error_message is not None:
                 await self._record_usage(
@@ -219,7 +264,7 @@ class TenderLLMClient:
         client: AsyncOpenAI,
         messages: list[dict[str, str]],
         schema_name: str,
-        schema: dict[str, Any],
+        schema: dict[str, Any] | None,
         *,
         purpose: str,
         task_id: uuid.UUID | None,
@@ -227,46 +272,80 @@ class TenderLLMClient:
     ) -> str:
         """流式请求：逐段回调增量内容，返回完整内容。
 
-        不支持的提供商按「带 usage → 不带 usage → JSON Mode 流式 → 非流式」
-        逐级降级；非流式降级时把完整内容作为一次 delta 回调，调用方无需感知差异。
+        结构化请求（schema 非空）按「带 usage → 不带 usage → JSON Mode 流式
+        → 非流式」逐级降级；纯文本请求直接流式。非流式降级时把完整内容
+        作为一次 delta 回调，调用方无需感知差异。
         """
 
         started = time.perf_counter()
         error_message: str | None = None
         completion_options = _completion_options(config)
-        response_format = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": schema_name,
-                # 与 _request_content 保持一致：动态部分由 Pydantic 做最终校验。
-                "strict": False,
-                "schema": schema,
-            },
-        }
+        response_format: dict[str, Any] | None = None
+        if schema is not None:
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    # 与 _request_content 保持一致：动态部分由 Pydantic 做最终校验。
+                    "strict": False,
+                    "schema": schema,
+                },
+            }
+        delivered = False
+
+        async def tracked_on_delta(piece: str) -> None:
+            nonlocal delivered
+            delivered = True
+            await on_delta(piece)
+
         try:
             try:
-                stream = await client.chat.completions.create(
-                    model=config.default_model,
-                    messages=messages,
-                    response_format=response_format,
-                    stream=True,
-                    stream_options={"include_usage": True},
+                request_options: dict[str, Any] = {
+                    "model": config.default_model,
+                    "messages": messages,
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
                     **completion_options,
-                )
+                }
+                if response_format is not None:
+                    request_options["response_format"] = response_format
+                stream = await client.chat.completions.create(**request_options)
             except BadRequestError as exc:
                 logger.warning(
                     "当前 LLM 不支持 include_usage 流式参数，降级重试：%s",
                     exc,
                 )
-                stream = await client.chat.completions.create(
-                    model=config.default_model,
-                    messages=messages,
-                    response_format=response_format,
-                    stream=True,
+                retry_options: dict[str, Any] = {
+                    "model": config.default_model,
+                    "messages": messages,
+                    "stream": True,
                     **completion_options,
-                )
-            content_parts, usage = await self._consume_stream(stream, on_delta)
+                }
+                if response_format is not None:
+                    retry_options["response_format"] = response_format
+                stream = await client.chat.completions.create(**retry_options)
+            content_parts, usage = await self._consume_stream(
+                stream,
+                tracked_on_delta,
+            )
         except BadRequestError as exc:
+            if schema is None:
+                # 纯文本流式仍失败：退回一次性请求，整段作为一次 delta。
+                logger.warning(
+                    "当前 LLM 不支持流式输出，降级为非流式：%s",
+                    exc,
+                )
+                content = await self._request_content_once(
+                    config,
+                    client,
+                    messages,
+                    schema_name,
+                    schema,
+                    purpose=purpose,
+                    task_id=task_id,
+                )
+                await on_delta(content)
+                return content
             # json_schema 流式不可用：部分兼容服务只支持 JSON Mode，再试一次。
             logger.warning(
                 "当前 LLM 不支持流式 JSON Schema，降级 JSON Mode 流式：%s",
@@ -280,7 +359,10 @@ class TenderLLMClient:
                     stream=True,
                     **completion_options,
                 )
-                content_parts, usage = await self._consume_stream(stream, on_delta)
+                content_parts, usage = await self._consume_stream(
+                    stream,
+                    tracked_on_delta,
+                )
             except BadRequestError as exc2:
                 # 流式整体不可用：退回一次性请求（该路径不会再进入流式），
                 # 整段内容作为一次 delta，前端仍能收到完整输出。
@@ -317,6 +399,28 @@ class TenderLLMClient:
         except APIStatusError as exc:
             error_message = f"大模型服务请求失败，HTTP 状态码：{exc.status_code}"
             raise AppException(error_message, code=50217, status_code=502) from exc
+        except APIError as exc:
+            if not delivered:
+                # 流式通道不可用（如网关 200 后返回错误事件）且尚未输出任何内容：
+                # 直接降级为非流式请求，整段内容作为一次 delta。
+                logger.warning(
+                    "流式响应中断且尚未输出内容，降级为非流式：%s",
+                    exc,
+                )
+                content = await self._request_content_once(
+                    config,
+                    client,
+                    messages,
+                    schema_name,
+                    schema,
+                    purpose=purpose,
+                    task_id=task_id,
+                )
+                await on_delta(content)
+                return content
+            # 上游返回无法解析的错误（如网关 502/503），属于瞬时故障。
+            error_message = "大模型服务暂时不可用，请稍后重试"
+            raise AppException(error_message, code=50218, status_code=502) from exc
         finally:
             if error_message is not None:
                 await self._record_usage(
@@ -545,6 +649,46 @@ class TenderLLMClient:
                 )
             }
         )
+
+    async def chat(
+        self,
+        *,
+        system_prompt: str,
+        history: list[dict[str, str]],
+        context: str,
+        question: str,
+        task_id: uuid.UUID | None = None,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
+    ) -> str:
+        """基于给定背景信息流式回答用户问题（纯文本，无 JSON Schema）。"""
+
+        config, client = await self._make_client()
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        messages.extend(history)
+        messages.append(
+            {
+                "role": "user",
+                "content": PROMPTS["chat_user"].render(
+                    context=context,
+                    question=question,
+                ),
+            }
+        )
+        try:
+            content = await self._request_content(
+                config,
+                client,
+                messages,
+                "",
+                None,
+                purpose="chat",
+                task_id=task_id,
+                on_delta=on_delta,
+            )
+        finally:
+            with suppress(Exception):
+                await client.close()
+        return content
 
 
 def _strip_json_fence(content: str) -> str:

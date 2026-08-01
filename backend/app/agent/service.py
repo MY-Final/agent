@@ -1,6 +1,9 @@
+import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from typing import Any
 from langgraph.types import Command
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -12,7 +15,7 @@ from app.core.database import AsyncSessionFactory
 from app.core.exceptions import AppException, ConflictException, NotFoundException
 from app.models.agent_run import AgentRun, AgentRunStatus, AgentStep
 from app.models.match_result import TaskMatchResult
-from app.models.parse_result import TaskParseResult
+from app.models.parse_result import ParseResultStatus, TaskParseResult
 from app.models.task import Task, TaskStatus
 from app.schemas.agent import (
     AgentConfirmInput,
@@ -24,9 +27,15 @@ from app.schemas.agent import (
 from app.schemas.skills.match import MatchReport
 from app.schemas.skills.parse import ParseResult
 from app.services.template_service import TemplateService
+from app.skills.llm import TenderLLMClient
+from app.skills.prompt_loader import PROMPTS
 
 
 logger = logging.getLogger(__name__)
+
+_CHAT_HISTORY_KEY = "chat_history"
+_CHAT_HISTORY_LIMIT = 12
+_CHAT_CONTEXT_LIMIT = 20000
 
 
 class AgentService:
@@ -219,6 +228,98 @@ class AgentService:
                     thread_id,
                 )
         return await AgentService.start(task_id)
+
+    @staticmethod
+    async def chat(
+        task_id: uuid.UUID,
+        question: str,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
+    ) -> str:
+        """基于最新解析结果与原文，在当前 Agent 会话内继续对话。"""
+
+        async with AsyncSessionFactory() as session:
+            await AgentService._get_task(session, task_id)
+            run = await AgentService._get_latest_run(session, task_id)
+            if run is None:
+                raise NotFoundException("该任务尚未启动 Agent 流程")
+            statement = (
+                select(TaskParseResult)
+                .where(
+                    TaskParseResult.task_id == task_id,
+                    TaskParseResult.status == ParseResultStatus.SUCCESS,
+                )
+                .order_by(
+                    TaskParseResult.created_at.desc(),
+                    TaskParseResult.id.desc(),
+                )
+                .limit(1)
+            )
+            latest = await session.scalar(statement)
+            if latest is None or latest.result_json is None:
+                raise ConflictException(
+                    "该任务还没有可用的解析结果，请先完成一次解析"
+                )
+            run_id = run.id
+            history = list((run.extra or {}).get(_CHAT_HISTORY_KEY) or [])
+
+        context = AgentService._build_chat_context(
+            latest.result_json,
+            latest.source_texts,
+        )
+        answer = await TenderLLMClient().chat(
+            system_prompt=PROMPTS["chat_system"].content,
+            history=history[-(_CHAT_HISTORY_LIMIT - 2) :],
+            context=context,
+            question=question,
+            task_id=task_id,
+            on_delta=on_delta,
+        )
+
+        async with AsyncSessionFactory() as session:
+            run = await session.get(AgentRun, run_id)
+            if run is not None:
+                extra = dict(run.extra or {})
+                messages = list(extra.get(_CHAT_HISTORY_KEY) or [])
+                messages.extend(
+                    [
+                        {"role": "user", "content": question},
+                        {"role": "assistant", "content": answer},
+                    ]
+                )
+                extra[_CHAT_HISTORY_KEY] = messages[-_CHAT_HISTORY_LIMIT:]
+                run.extra = extra
+                await session.commit()
+        return answer
+
+    @staticmethod
+    def _build_chat_context(
+        result_json: dict[str, Any],
+        source_texts: list[dict[str, Any]] | None,
+    ) -> str:
+        """把解析结果与原文整理成对话可用的上下文文本。"""
+
+        lines: list[str] = []
+        try:
+            result = ParseResult.model_validate(result_json)
+        except ValidationError:
+            result = None
+        if result is not None:
+            lines.append("=== 结构化解析结果 ===")
+            for section in result.template.sections:
+                lines.append(f"[{section.title}]")
+                value = result.data.get(section.id)
+                lines.append(
+                    json.dumps(value, ensure_ascii=False, indent=1)[:2000]
+                )
+        if source_texts:
+            lines.append("")
+            lines.append("=== 标书原文（截取） ===")
+            for item in source_texts[:3]:
+                filename = str(item.get("filename") or "未命名文件")
+                text = str(item.get("text") or "")[:6000]
+                lines.append(f"--- {filename} ---")
+                lines.append(text)
+        return "\n".join(lines)[:_CHAT_CONTEXT_LIMIT]
 
     @staticmethod
     async def _get_status_by_run_id(run_id: uuid.UUID) -> AgentStatusRead:

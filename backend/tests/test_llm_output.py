@@ -1,6 +1,6 @@
 import unittest
 
-from app.schemas.skills.parse import ParseTemplate
+from app.schemas.skills.parse import ParseResult, ParseTemplate, QualificationItem
 from app.skills.llm import _fill_missing_template_data, _format_raw_llm_content
 from app.skills.parse_template import SEED_PARSE_TEMPLATE
 
@@ -64,6 +64,58 @@ class FillMissingTemplateDataTests(unittest.TestCase):
             set(filled),
             {section.id for section in template.sections},
         )
+
+
+class QualificationItemTests(unittest.TestCase):
+    def test_null_is_mandatory_coerced_to_true(self) -> None:
+        item = QualificationItem.model_validate(
+            {
+                "category": "资质",
+                "description": "具备甲级资质",
+                "is_mandatory": None,
+            }
+        )
+        self.assertTrue(item.is_mandatory)
+
+    def test_missing_is_mandatory_defaults_to_true(self) -> None:
+        item = QualificationItem.model_validate(
+            {"category": "资质", "description": "具备甲级资质"}
+        )
+        self.assertTrue(item.is_mandatory)
+
+    def test_parse_result_qualifications_tolerate_null_mandatory(self) -> None:
+        """回归：LLM 返回 is_mandatory: null 时，状态摘要与匹配不应再 500。"""
+
+        payload = {
+            "template": SEED_PARSE_TEMPLATE.model_dump(),
+            "data": {
+                "overview": {
+                    "project_name": "测试项目",
+                    "project_code": None,
+                    "purchaser": None,
+                    "budget": None,
+                    "location": None,
+                    "duration": None,
+                },
+                "qualifications": [
+                    {
+                        "category": "资质",
+                        "description": "具备甲级资质",
+                        "is_mandatory": None,
+                        "original_text": "须具备甲级资质",
+                    }
+                ],
+                "scoring_method": {},
+                "key_dates": {},
+                "disqualification_items": [],
+                "other_key_points": [],
+            },
+            "raw_summary": None,
+            "confidence": 0.9,
+        }
+        result = ParseResult.model_validate(payload)
+        self.assertEqual(len(result.qualifications), 1)
+        self.assertTrue(result.qualifications[0].is_mandatory)
 
 
 if __name__ == "__main__":

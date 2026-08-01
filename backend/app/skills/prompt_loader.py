@@ -29,6 +29,8 @@ _REQUIRED_TEMPLATES: dict[str, tuple[str, set[str]]] = {
     "extract_user": ("extract_user.txt", {"template_description", "tender_text"}),
     "suggest_system": ("suggest_system.txt", set()),
     "suggest_user": ("suggest_user.txt", {"description", "reference_block"}),
+    "chat_system": ("chat_system.txt", set()),
+    "chat_user": ("chat_user.txt", {"context", "question"}),
 }
 
 

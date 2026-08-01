@@ -4,7 +4,14 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.models.parse_result import ParseResultStatus, TaskParseResult
 
@@ -21,6 +28,15 @@ class QualificationItem(BaseModel):
     description: str
     is_mandatory: bool = True
     original_text: str | None = None
+
+    @field_validator("is_mandatory", mode="before")
+    @classmethod
+    def _coerce_unknown_mandatory(cls, value: Any) -> Any:
+        """模板中该列非必填，LLM 可能返回 null：按未声明处理为强制（保守）。"""
+
+        if value is None:
+            return True
+        return value
 
 
 class FieldType(str, enum.Enum):

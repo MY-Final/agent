@@ -29,6 +29,14 @@ class AgentRejectInput(BaseModel):
     )
 
 
+class AgentChatInput(BaseModel):
+    question: str = Field(
+        min_length=1,
+        max_length=4000,
+        description="基于当前解析结果继续提问的内容",
+    )
+
+
 class AgentParseSummary(BaseModel):
     project_name: str | None = None
     project_code: str | None = None

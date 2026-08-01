@@ -10,10 +10,62 @@ from app.core.llm_stream import reset_llm_stream_handlers, set_llm_stream_handle
 from app.core.response import ApiResponse, success_response
 from app.core.sse import SSE_HEADERS, EventBridge, sse_event, stream_error_message
 from app.schemas.agent import AgentStatusRead
-from app.schemas.agent import AgentConfirmInput, AgentRejectInput, AgentStatusRead
+from app.schemas.agent import (
+    AgentChatInput,
+    AgentConfirmInput,
+    AgentRejectInput,
+    AgentStatusRead,
+)
 
 
 router = APIRouter(tags=["任务分析 Agent"])
+
+
+@router.post(
+    "/tasks/{task_id}/agent/chat/stream",
+    response_model=None,
+    summary="与当前任务 Agent 对话（SSE）",
+)
+async def chat_agent_stream(
+    task_id: uuid.UUID,
+    payload: AgentChatInput,
+) -> StreamingResponse:
+    """基于最新解析结果与原文流式回答；SSE 事件：stage / delta / result / error。"""
+
+    async def event_source() -> AsyncIterator[str]:
+        bridge = EventBridge()
+        tokens = set_llm_stream_handlers(bridge.emit_delta, bridge.emit_stage)
+        task: asyncio.Task[str] | None = None
+        try:
+            await bridge.emit_stage(
+                "chat",
+                "正在基于当前解析结果回答…",
+            )
+            task = asyncio.create_task(
+                AgentService.chat(
+                    task_id,
+                    payload.question,
+                    on_delta=bridge.emit_delta,
+                )
+            )
+            async for event in bridge.pump(task):
+                yield sse_event(event)
+            answer = task.result()
+            await bridge.emit_stage("done", "回答完成")
+            yield sse_event({"type": "result", "data": {"answer": answer}})
+        except Exception as exc:
+            code, message = stream_error_message(exc)
+            yield sse_event({"type": "error", "code": code, "message": message})
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+            reset_llm_stream_handlers(tokens)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @router.post(

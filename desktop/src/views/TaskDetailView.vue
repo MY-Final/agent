@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
   Check,
+  ChatDotRound,
   Download,
   Files,
   Refresh,
@@ -17,6 +18,7 @@ import { ElMessage, type UploadFile, type UploadRawFile } from 'element-plus'
 import { ApiRequestError, getErrorMessage, isNotFoundError } from '@/api/client'
 import { taskApi } from '@/api/tasks'
 import { templateApi } from '@/api/templates'
+import AgentChatPanel from '@/components/AgentChatPanel.vue'
 import AgentProgressPanel from '@/components/AgentProgressPanel.vue'
 import MatchResultPanel from '@/components/MatchResultPanel.vue'
 import ParseResultPanel from '@/components/ParseResultPanel.vue'
@@ -44,6 +46,7 @@ const agentActionLoading = ref(false)
 const streamingActive = ref(false)
 const streamingStage = ref('')
 const streamingText = ref('')
+const streamBodyRef = ref<HTMLElement | null>(null)
 const uploadLoading = ref(false)
 const confirmDialogVisible = ref(false)
 const confirmationRemark = ref('')
@@ -53,6 +56,12 @@ const rejectTemplateId = ref('')
 const templates = ref<ParseTemplateRecord[]>([])
 const templatesLoading = ref(false)
 let pollTimer: number | null = null
+
+watch(streamingText, async () => {
+  await nextTick()
+  const el = streamBodyRef.value
+  if (el) el.scrollTop = el.scrollHeight
+})
 
 const exportUrl = computed(() => {
   if (!parseRecord.value) return null
@@ -161,6 +170,7 @@ async function startAgent(): Promise<void> {
   streamingActive.value = true
   streamingStage.value = ''
   streamingText.value = ''
+  activeTab.value = 'progress'
   try {
     let finalStatus: AgentStatus | null = null
     for await (const event of taskApi.startAgentStream(taskId.value)) {
@@ -438,6 +448,19 @@ onBeforeUnmount(() => {
             <MatchResultPanel :record="matchRecord" :loading="refreshing" />
           </el-tab-pane>
 
+          <el-tab-pane name="chat">
+            <template #label>
+              <span class="tab-label">
+                <el-icon><ChatDotRound /></el-icon>
+                与 Agent 对话
+              </span>
+            </template>
+            <AgentChatPanel
+              :task-id="taskId"
+              :has-result="Boolean(parseRecord)"
+            />
+          </el-tab-pane>
+
           <el-tab-pane label="状态与进度" name="progress">
             <AgentProgressPanel :status="agentStatus" :task-status="task.status" :loading="refreshing" />
             <section v-if="streamingActive || streamingText" class="stream-panel">
@@ -446,7 +469,7 @@ onBeforeUnmount(() => {
                 <strong>大模型实时输出</strong>
                 <span v-if="streamingStage" class="stream-stage">{{ streamingStage }}</span>
               </div>
-              <pre class="stream-content">{{ streamingText || '等待大模型输出…' }}</pre>
+              <pre ref="streamBodyRef" class="stream-content">{{ streamingText || '等待大模型输出…' }}</pre>
             </section>
           </el-tab-pane>
         </el-tabs>

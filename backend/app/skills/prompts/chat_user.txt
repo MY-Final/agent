@@ -1,0 +1,11 @@
+以下是当前任务的标书背景信息：
+<context>
+{{context}}
+</context>
+
+用户问题：
+<question>
+{{question}}
+</question>
+
+请根据背景信息回答用户问题。
