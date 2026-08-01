@@ -2,7 +2,9 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass, field
 from typing import Any
 
 from openai import (
@@ -18,6 +20,7 @@ from openai import (
 from pydantic import ValidationError
 
 from app.core.exceptions import AppException
+from app.core.llm_stream import LLM_DELTA_CALLBACK
 from app.schemas.parse_template import TemplateSuggestion
 from app.schemas.skills.parse import ParseResult, ParseTemplate, SectionKind
 from app.services.llm_provider_service import LLMRuntimeConfig, get_current_llm_config
@@ -35,8 +38,20 @@ from app.skills.parse_template import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class LLMCallTrace:
+    """一次大模型调用的完整痕迹：发送的消息、响应 Schema 与原始返回。"""
+
+    messages: list[dict[str, str]] = field(default_factory=list)
+    schema: dict[str, Any] = field(default_factory=dict)
+    raw_response: str = ""
+
+
 class TenderLLMClient:
     """OpenAI 兼容结构化输出客户端。"""
+
+    def __init__(self) -> None:
+        self.last_trace: LLMCallTrace | None = None
 
     async def _make_client(
         self,
@@ -68,8 +83,45 @@ class TenderLLMClient:
         *,
         purpose: str,
         task_id: uuid.UUID | None = None,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
-        """发起结构化输出请求，统一映射上游错误并记录用量，返回内容文本。"""
+        """发起结构化输出请求：有流式回调时走流式，否则走一次性请求。"""
+
+        delta_callback = on_delta or LLM_DELTA_CALLBACK.get()
+        if delta_callback is not None:
+            return await self._stream_content(
+                config,
+                client,
+                messages,
+                schema_name,
+                schema,
+                purpose=purpose,
+                task_id=task_id,
+                on_delta=delta_callback,
+            )
+
+        return await self._request_content_once(
+            config,
+            client,
+            messages,
+            schema_name,
+            schema,
+            purpose=purpose,
+            task_id=task_id,
+        )
+
+    async def _request_content_once(
+        self,
+        config: LLMRuntimeConfig,
+        client: AsyncOpenAI,
+        messages: list[dict[str, str]],
+        schema_name: str,
+        schema: dict[str, Any],
+        *,
+        purpose: str,
+        task_id: uuid.UUID | None = None,
+    ) -> str:
+        """一次性（非流式）结构化输出请求，统一映射上游错误并记录用量。"""
 
         started = time.perf_counter()
         error_message: str | None = None
@@ -161,6 +213,167 @@ class TenderLLMClient:
         )
         return content
 
+    async def _stream_content(
+        self,
+        config: LLMRuntimeConfig,
+        client: AsyncOpenAI,
+        messages: list[dict[str, str]],
+        schema_name: str,
+        schema: dict[str, Any],
+        *,
+        purpose: str,
+        task_id: uuid.UUID | None,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> str:
+        """流式请求：逐段回调增量内容，返回完整内容。
+
+        不支持的提供商按「带 usage → 不带 usage → JSON Mode 流式 → 非流式」
+        逐级降级；非流式降级时把完整内容作为一次 delta 回调，调用方无需感知差异。
+        """
+
+        started = time.perf_counter()
+        error_message: str | None = None
+        completion_options = _completion_options(config)
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                # 与 _request_content 保持一致：动态部分由 Pydantic 做最终校验。
+                "strict": False,
+                "schema": schema,
+            },
+        }
+        try:
+            try:
+                stream = await client.chat.completions.create(
+                    model=config.default_model,
+                    messages=messages,
+                    response_format=response_format,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    **completion_options,
+                )
+            except BadRequestError as exc:
+                logger.warning(
+                    "当前 LLM 不支持 include_usage 流式参数，降级重试：%s",
+                    exc,
+                )
+                stream = await client.chat.completions.create(
+                    model=config.default_model,
+                    messages=messages,
+                    response_format=response_format,
+                    stream=True,
+                    **completion_options,
+                )
+            content_parts, usage = await self._consume_stream(stream, on_delta)
+        except BadRequestError as exc:
+            # json_schema 流式不可用：部分兼容服务只支持 JSON Mode，再试一次。
+            logger.warning(
+                "当前 LLM 不支持流式 JSON Schema，降级 JSON Mode 流式：%s",
+                exc,
+            )
+            try:
+                stream = await client.chat.completions.create(
+                    model=config.default_model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    stream=True,
+                    **completion_options,
+                )
+                content_parts, usage = await self._consume_stream(stream, on_delta)
+            except BadRequestError as exc2:
+                # 流式整体不可用：退回一次性请求（该路径不会再进入流式），
+                # 整段内容作为一次 delta，前端仍能收到完整输出。
+                logger.warning(
+                    "当前 LLM 不支持流式输出，降级为非流式：%s",
+                    exc2,
+                )
+                content = await self._request_content_once(
+                    config,
+                    client,
+                    messages,
+                    schema_name,
+                    schema,
+                    purpose=purpose,
+                    task_id=task_id,
+                )
+                await on_delta(content)
+                return content
+        except AuthenticationError as exc:
+            error_message = "大模型鉴权失败，请检查当前提供商的 API Key"
+            raise AppException(error_message, code=50213, status_code=502) from exc
+        except PermissionDeniedError as exc:
+            error_message = "当前密钥无权调用配置的大模型"
+            raise AppException(error_message, code=50214, status_code=502) from exc
+        except RateLimitError as exc:
+            error_message = "大模型服务请求过于频繁或额度不足"
+            raise AppException(error_message, code=50215, status_code=502) from exc
+        except APITimeoutError as exc:
+            error_message = "大模型服务响应超时"
+            raise AppException(error_message, code=50401, status_code=504) from exc
+        except APIConnectionError as exc:
+            error_message = "无法连接大模型服务，请检查当前提供商地址和网络"
+            raise AppException(error_message, code=50216, status_code=502) from exc
+        except APIStatusError as exc:
+            error_message = f"大模型服务请求失败，HTTP 状态码：{exc.status_code}"
+            raise AppException(error_message, code=50217, status_code=502) from exc
+        finally:
+            if error_message is not None:
+                await self._record_usage(
+                    config,
+                    purpose,
+                    task_id,
+                    status="failed",
+                    error_message=error_message,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                )
+
+        content = "".join(content_parts)
+        if not content.strip():
+            await self._record_usage(
+                config,
+                purpose,
+                task_id,
+                status="failed",
+                error_message="大模型没有返回可用的结构化内容",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            )
+            raise AppException(
+                "大模型没有返回可用的结构化内容",
+                code=50211,
+                status_code=502,
+            )
+        await self._record_usage(
+            config,
+            purpose,
+            task_id,
+            status="success",
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            total_tokens=getattr(usage, "total_tokens", 0) or 0,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return content
+
+    async def _consume_stream(
+        self,
+        stream: Any,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> tuple[list[str], Any]:
+        """消费流式响应：累计内容并逐段回调，返回（内容片段列表, usage）。"""
+
+        content_parts: list[str] = []
+        usage: Any = None
+        async for chunk in stream:
+            usage = getattr(chunk, "usage", None) or usage
+            if not chunk.choices:
+                continue
+            piece = getattr(chunk.choices[0].delta, "content", None)
+            if piece:
+                content_parts.append(piece)
+                await on_delta(piece)
+        return content_parts, usage
+
     @staticmethod
     async def _record_usage(
         config: LLMRuntimeConfig,
@@ -197,6 +410,7 @@ class TenderLLMClient:
         template: ParseTemplate,
         *,
         task_id: uuid.UUID | None = None,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> ParseResult:
         config, client = await self._make_client()
         messages = [
@@ -219,11 +433,17 @@ class TenderLLMClient:
                 schema,
                 purpose="parse",
                 task_id=task_id,
+                on_delta=on_delta,
             )
         finally:
             with suppress(Exception):
                 await client.close()
 
+        self.last_trace = LLMCallTrace(
+            messages=messages,
+            schema=schema,
+            raw_response=content,
+        )
         try:
             payload = json.loads(_strip_json_fence(content))
             data = _fill_missing_template_data(template, payload.get("data") or {})
@@ -235,22 +455,27 @@ class TenderLLMClient:
             )
         except json.JSONDecodeError as exc:
             logger.warning(
-                "大模型返回内容不是有效 JSON：%s", content[:300]
+                "大模型返回内容不是有效 JSON：%s",
+                content,
             )
             raise AppException(
-                "大模型返回内容不是有效 JSON，未通过结构化结果校验",
+                "大模型返回内容不是有效 JSON，未通过结构化结果校验。"
+                "\n\n大模型原始返回：\n"
+                + _format_raw_llm_content(content),
                 code=50212,
                 status_code=502,
             ) from exc
         except ValidationError as exc:
             reason = _first_validation_error(exc)
             logger.warning(
-                "大模型结构化结果校验失败：%s | 原始片段：%s",
+                "大模型结构化结果校验失败：%s | 原始内容：%s",
                 reason,
-                content[:300],
+                content,
             )
             raise AppException(
-                f"大模型返回内容未通过结构化结果校验：{reason}",
+                f"大模型返回内容未通过结构化结果校验：{reason}"
+                "\n\n大模型原始返回：\n"
+                + _format_raw_llm_content(content),
                 code=50212,
                 status_code=502,
             ) from exc
@@ -259,6 +484,7 @@ class TenderLLMClient:
         self,
         description: str,
         reference_text: str | None = None,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> TemplateSuggestion:
         """根据自然语言需求生成模板建议，人工确认后再落库。"""
 
@@ -279,23 +505,36 @@ class TenderLLMClient:
                 "tender_template_suggestion",
                 schema,
                 purpose="template_suggest",
+                on_delta=on_delta,
             )
         finally:
             with suppress(Exception):
                 await client.close()
 
+        self.last_trace = LLMCallTrace(
+            messages=messages,
+            schema=schema,
+            raw_response=content,
+        )
         try:
             payload = json.loads(_strip_json_fence(content))
             suggestion = TemplateSuggestion.model_validate(payload)
         except json.JSONDecodeError as exc:
+            logger.warning("大模型返回的模板建议不是有效 JSON：%s", content)
             raise AppException(
-                "大模型返回的模板建议不是有效 JSON",
+                "大模型返回的模板建议不是有效 JSON。"
+                "\n\n大模型原始返回：\n"
+                + _format_raw_llm_content(content),
                 code=50222,
                 status_code=502,
             ) from exc
         except ValidationError as exc:
+            reason = _first_validation_error(exc)
+            logger.warning("大模型模板建议校验失败：%s | 原始内容：%s", reason, content)
             raise AppException(
-                f"大模型返回的模板建议未通过校验：{_first_validation_error(exc)}",
+                f"大模型返回的模板建议未通过校验：{reason}"
+                "\n\n大模型原始返回：\n"
+                + _format_raw_llm_content(content),
                 code=50222,
                 status_code=502,
             ) from exc
@@ -316,6 +555,21 @@ def _strip_json_fence(content: str) -> str:
     return stripped
 
 
+def _format_raw_llm_content(content: str, limit: int = 3000) -> str:
+    """把大模型原始返回整理成可读文本；有效 JSON 会格式化，超长则截断。"""
+
+    text = (content or "").strip()
+    if not text:
+        return "<空响应>"
+    try:
+        text = json.dumps(json.loads(text), ensure_ascii=False, indent=2)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...(已截断，完整内容见服务端日志)"
+
+
 def _first_validation_error(exc: ValidationError) -> str:
     first = exc.errors()[0]
     location = ".".join(str(part) for part in first.get("loc", ()))
@@ -333,11 +587,15 @@ def _fill_missing_template_data(
     for section in template.sections:
         value = filled.get(section.id)
         if value is None:
-            filled[section.id] = (
-                {}
-                if section.kind in {SectionKind.GRID, SectionKind.KEY_VALUE}
-                else []
-            )
+            if section.kind == SectionKind.GRID:
+                # grid 缺失时也要补全字段默认值，避免校验误报"缺少字段"。
+                filled[section.id] = {
+                    field.key: None for field in section.fields
+                }
+            elif section.kind == SectionKind.KEY_VALUE:
+                filled[section.id] = {}
+            else:
+                filled[section.id] = []
             continue
         if section.kind == SectionKind.GRID and isinstance(value, dict):
             grid = dict(value)

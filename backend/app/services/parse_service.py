@@ -165,6 +165,8 @@ class ParseService:
                 template_id=template_id,
                 template_version=template.version,
                 source_texts=outcome.source_texts,
+                llm_prompt=outcome.llm_prompt,
+                raw_llm_response=outcome.raw_llm_response,
                 result_json=outcome.result.model_dump(mode="json"),
                 status=ParseResultStatus.SUCCESS,
                 error_message=None,

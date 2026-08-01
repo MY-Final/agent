@@ -58,6 +58,12 @@ class TaskParseResult(Base):
     source_texts: Mapped[list[dict[str, Any]] | None] = mapped_column(
         JSONB, nullable=True
     )
+    llm_prompt: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    raw_llm_response: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[ParseResultStatus] = mapped_column(
         Enum(

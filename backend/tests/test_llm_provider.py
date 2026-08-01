@@ -363,6 +363,10 @@ class TenderLLMClientTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value=runtime_config),
             ),
             patch("app.skills.llm.AsyncOpenAI", return_value=fake_client) as client_class,
+            patch(
+                "app.skills.llm.LLMUsageService.record_usage",
+                new=AsyncMock(),
+            ),
         ):
             result = await TenderLLMClient().extract(
                 "测试标书原文",

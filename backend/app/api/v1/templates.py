@@ -1,11 +1,16 @@
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.core.llm_stream import reset_llm_stream_handlers, set_llm_stream_handlers
 from app.core.response import ApiResponse, success_response
+from app.core.sse import SSE_HEADERS, EventBridge, sse_event, stream_error_message
 from app.schemas.parse_template import (
     ParseTemplateCreate,
     ParseTemplateRead,
@@ -20,6 +25,49 @@ from app.services.template_service import TemplateService
 
 router = APIRouter(prefix="/templates", tags=["解析模板"])
 SessionDep = Annotated[AsyncSession, Depends(get_db_session)]
+
+
+@router.post(
+    "/suggest/stream",
+    response_model=None,
+    summary="流式生成解析模板建议（SSE）",
+)
+async def suggest_template_stream(
+    payload: TemplateSuggestionInput,
+) -> StreamingResponse:
+    """SSE 事件流：stage / delta / result / error。"""
+
+    async def event_source() -> AsyncIterator[str]:
+        bridge = EventBridge()
+        tokens = set_llm_stream_handlers(bridge.emit_delta, bridge.emit_stage)
+        task: asyncio.Task[TemplateSuggestion] | None = None
+        try:
+            await bridge.emit_stage("suggest", "正在生成模板建议，实时输出如下：")
+            task = asyncio.create_task(
+                TemplateSuggestionService.suggest(
+                    payload.description,
+                    payload.reference_text,
+                )
+            )
+            async for event in bridge.pump(task):
+                yield sse_event(event)
+            suggestion = task.result()
+            yield sse_event(
+                {"type": "result", "data": suggestion.model_dump(mode="json")}
+            )
+        except Exception as exc:
+            code, message = stream_error_message(exc)
+            yield sse_event({"type": "error", "code": code, "message": message})
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+            reset_llm_stream_handlers(tokens)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @router.get(

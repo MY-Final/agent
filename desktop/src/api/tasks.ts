@@ -1,4 +1,4 @@
-import { agentRequestConfig, request } from './client'
+import { agentRequestConfig, request, streamSse } from './client'
 import type { HealthData } from '@/types/api'
 import type { AgentStatus } from '@/types/agent'
 import type {
@@ -66,6 +66,9 @@ export const taskApi = {
       url: `/api/v1/tasks/${taskId}/agent/start`,
       ...agentRequestConfig,
     }),
+
+  startAgentStream: (taskId: string) =>
+    streamSse(`/api/v1/tasks/${taskId}/agent/start/stream`, {}),
 
   getAgentStatus: (taskId: string) =>
     request<AgentStatus>({ method: 'GET', url: `/api/v1/tasks/${taskId}/agent/status` }),

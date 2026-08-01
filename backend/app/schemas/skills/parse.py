@@ -353,6 +353,8 @@ class ParseResultRead(BaseModel):
     reject_reason: str | None
     status: ParseResultStatus
     result: ParseResult | None
+    llm_prompt: dict[str, Any] | None = None
+    raw_llm_response: str | None = None
     error_message: str | None
     created_at: datetime
     updated_at: datetime
@@ -380,6 +382,8 @@ class ParseResultRead(BaseModel):
             reject_reason=record.reject_reason,
             status=record.status,
             result=parsed_result,
+            llm_prompt=record.llm_prompt,
+            raw_llm_response=record.raw_llm_response,
             error_message=record.error_message,
             created_at=record.created_at,
             updated_at=record.updated_at,

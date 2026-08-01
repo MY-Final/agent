@@ -1,5 +1,7 @@
+import asyncio
 import io
 import uuid
+from collections.abc import AsyncIterator
 from typing import Annotated
 from urllib.parse import quote
 
@@ -8,8 +10,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.core.llm_stream import reset_llm_stream_handlers, set_llm_stream_handlers
 from app.core.minio import minio_storage
 from app.core.response import ApiResponse, success_response
+from app.core.sse import SSE_HEADERS, EventBridge, sse_event, stream_error_message
+from app.models.parse_result import TaskParseResult
 from app.schemas.skills.match import MatchInput, MatchResultRead
 from app.schemas.skills.parse import (
     ParseInput,
@@ -24,6 +29,54 @@ from app.services.export_service import ExportService
 
 router = APIRouter(tags=["业务 Skills"])
 SessionDep = Annotated[AsyncSession, Depends(get_db_session)]
+
+
+@router.post(
+    "/skills/parse/stream",
+    response_model=None,
+    summary="流式调用标书解析 Skill（SSE）",
+)
+async def parse_skill_stream(
+    payload: ParseInput,
+    session: SessionDep,
+) -> StreamingResponse:
+    """SSE 事件流：stage（阶段）/ delta（大模型增量）/ result / error。"""
+
+    async def event_source() -> AsyncIterator[str]:
+        bridge = EventBridge()
+        tokens = set_llm_stream_handlers(bridge.emit_delta, bridge.emit_stage)
+        task: asyncio.Task[TaskParseResult] | None = None
+        try:
+            await bridge.emit_stage("prepare", "正在准备解析任务…")
+            await bridge.emit_stage("extract", "正在提取标书文本…")
+            task = asyncio.create_task(
+                ParseService.parse_from_input(session, minio_storage, payload)
+            )
+            async for event in bridge.pump(task):
+                yield sse_event(event)
+            record = task.result()
+            await bridge.emit_stage("done", "解析完成")
+            yield sse_event(
+                {
+                    "type": "result",
+                    "data": ParseResultRead.from_orm_record(record).model_dump(
+                        mode="json"
+                    ),
+                }
+            )
+        except Exception as exc:
+            code, message = stream_error_message(exc)
+            yield sse_event({"type": "error", "code": code, "message": message})
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+            reset_llm_stream_handlers(tokens)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @router.post(

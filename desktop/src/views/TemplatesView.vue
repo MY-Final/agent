@@ -11,7 +11,7 @@ import {
   StarFilled,
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getErrorMessage } from '@/api/client'
+import { ApiRequestError, getErrorMessage } from '@/api/client'
 import { templateApi } from '@/api/templates'
 import TemplateEditorDrawer from '@/components/TemplateEditorDrawer.vue'
 import type { SectionDefinition } from '@/types/results'
@@ -26,6 +26,8 @@ const editingTemplate = ref<ParseTemplateRecord | null>(null)
 const suggestion = ref<TemplateSuggestion | null>(null)
 const suggestDialogVisible = ref(false)
 const suggesting = ref(false)
+const suggestStreamingVisible = ref(false)
+const suggestStreaming = ref('')
 const suggestionDescription = ref('')
 const suggestionReference = ref('')
 
@@ -85,11 +87,27 @@ async function generateSuggestion(): Promise<void> {
     return
   }
   suggesting.value = true
+  suggestStreamingVisible.value = true
+  suggestStreaming.value = ''
   try {
-    suggestion.value = await templateApi.suggest({
+    let finalSuggestion: TemplateSuggestion | null = null
+    for await (const event of templateApi.suggestStream({
       description,
       reference_text: suggestionReference.value.trim() || null,
-    })
+    })) {
+      if (event.type === 'delta') {
+        suggestStreaming.value += String(event.content ?? '')
+      } else if (event.type === 'result') {
+        finalSuggestion = event.data as TemplateSuggestion
+      } else if (event.type === 'error') {
+        throw new ApiRequestError(
+          String(event.message ?? '模板建议生成失败'),
+          typeof event.code === 'number' ? event.code : undefined,
+        )
+      }
+    }
+    if (!finalSuggestion) throw new ApiRequestError('模板建议未返回结果')
+    suggestion.value = finalSuggestion
     suggestDialogVisible.value = false
     editingTemplate.value = null
     editorVisible.value = true
@@ -98,6 +116,7 @@ async function generateSuggestion(): Promise<void> {
     ElMessage.error(getErrorMessage(error))
   } finally {
     suggesting.value = false
+    suggestStreamingVisible.value = false
   }
 }
 
@@ -333,6 +352,13 @@ onMounted(() => {
           />
         </label>
         <p class="suggest-note">系统会自动补充「资格要求」表格区块，用于后续资质匹配。</p>
+        <section v-if="suggestStreamingVisible" class="suggest-stream">
+          <div class="suggest-stream-title">
+            <span class="suggest-stream-dot" />
+            AI 实时生成中…
+          </div>
+          <pre class="suggest-stream-content">{{ suggestStreaming || '等待大模型输出…' }}</pre>
+        </section>
       </div>
       <template #footer>
         <el-button @click="suggestDialogVisible = false">取消</el-button>
@@ -573,5 +599,49 @@ onMounted(() => {
   color: var(--text-tertiary);
   font-size: 11px;
   line-height: 1.6;
+}
+
+.suggest-stream {
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.suggest-stream-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 12px;
+  background: var(--bg-secondary, #fafafa);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.suggest-stream-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--primary-color);
+  border-radius: 50%;
+  animation: suggest-stream-blink 1s ease-in-out infinite;
+}
+
+.suggest-stream-content {
+  max-height: 220px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+@keyframes suggest-stream-blink {
+  50% { opacity: 0.3; }
 }
 </style>

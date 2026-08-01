@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.core.llm_stream import PARSE_STAGE_CALLBACK
 from app.schemas.skills.parse import ParseResult, ParseTemplate
 from app.skills.llm import TenderLLMClient
 from app.skills.parse_template import SEED_PARSE_TEMPLATE
@@ -22,6 +23,8 @@ class ParseOutcome:
 
     result: ParseResult
     source_texts: list[dict[str, Any]]
+    llm_prompt: dict[str, Any] | None = None
+    raw_llm_response: str | None = None
 
 
 class ParseTenderSkill:
@@ -66,6 +69,12 @@ class ParseTenderSkill:
                 )
             )
 
+        stage_callback = PARSE_STAGE_CALLBACK.get()
+        if stage_callback is not None:
+            await stage_callback(
+                "llm",
+                "正在调用大模型抽取结构化信息，实时输出如下：",
+            )
         llm_client = self._llm_client or TenderLLMClient()
         return ParseOutcome(
             result=await llm_client.extract(
@@ -74,4 +83,17 @@ class ParseTenderSkill:
                 task_id=task_id,
             ),
             source_texts=source_texts,
+            llm_prompt=(
+                {
+                    "messages": llm_client.last_trace.messages,
+                    "schema": llm_client.last_trace.schema,
+                }
+                if llm_client.last_trace is not None
+                else None
+            ),
+            raw_llm_response=(
+                llm_client.last_trace.raw_response
+                if llm_client.last_trace is not None
+                else None
+            ),
         )

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Document, Download, EditPen, Files } from '@element-plus/icons-vue'
+import { Document, Download, EditPen, Files, MagicStick } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { getErrorMessage } from '@/api/client'
 import { taskApi } from '@/api/tasks'
 import ParseResultCompare from '@/components/ParseResultCompare.vue'
+import ParseTraceDrawer from '@/components/ParseTraceDrawer.vue'
 import ResultEditor from '@/components/ResultEditor.vue'
 import ResultViewer from '@/components/ResultViewer.vue'
 import SourceTextDrawer from '@/components/SourceTextDrawer.vue'
@@ -28,6 +29,7 @@ const emit = defineEmits<{ saved: []; export: [] }>()
 
 const mode = ref<ViewMode>('single')
 const editMode = ref(false)
+const traceVisible = ref(false)
 const sourceVisible = ref(false)
 const sourceQuery = ref('')
 const selectedId = ref<string | null>(props.record?.id ?? null)
@@ -216,6 +218,14 @@ async function saveCorrections(
         <el-button
           v-if="mode === 'single' && displayedRecord?.status === 'success' && !editMode"
           size="small"
+          :icon="MagicStick"
+          @click="traceVisible = true"
+        >
+          过程详情
+        </el-button>
+        <el-button
+          v-if="mode === 'single' && displayedRecord?.status === 'success' && !editMode"
+          size="small"
           type="primary"
           plain
           :icon="EditPen"
@@ -298,6 +308,12 @@ async function saveCorrections(
       :parse-result-id="displayedRecord?.status === 'success' ? displayedRecord.id : null"
       :highlight="sourceQuery"
       :files="props.files"
+    />
+
+    <ParseTraceDrawer
+      v-model="traceVisible"
+      :task-id="props.taskId || ''"
+      :record="displayedRecord?.status === 'success' ? displayedRecord : null"
     />
   </div>
 </template>

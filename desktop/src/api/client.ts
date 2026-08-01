@@ -70,6 +70,59 @@ export function getErrorMessage(error: unknown): string {
   return toRequestError(error).message
 }
 
+export interface SseStreamEvent {
+  type: string
+  [key: string]: unknown
+}
+
+export async function* streamSse(
+  url: string,
+  body: unknown,
+  signal?: AbortSignal,
+): AsyncGenerator<SseStreamEvent> {
+  /** 用 fetch 读取 SSE 事件流，逐条产出解析后的事件对象。 */
+  const response = await fetch(`${getStoredBackendUrl()}${url}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  if (!response.ok || !response.body) {
+    let message = `请求失败（HTTP ${response.status}）`
+    try {
+      const payload = (await response.json()) as ApiResponse<unknown>
+      if (payload?.msg) message = payload.msg
+    } catch {
+      // 错误体不是 JSON 时保留默认消息
+    }
+    throw new ApiRequestError(message, undefined, response.status)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep = buffer.indexOf('\n\n')
+    while (sep !== -1) {
+      const raw = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('data: ')) {
+          try {
+            yield JSON.parse(line.slice(6)) as SseStreamEvent
+          } catch {
+            // 跳过无法解析的事件行
+          }
+        }
+      }
+      sep = buffer.indexOf('\n\n')
+    }
+  }
+}
+
 export async function testBackendConnection(baseUrl: string): Promise<HealthData> {
   try {
     const response = await axios.get<ApiResponse<HealthData>>('/health', {

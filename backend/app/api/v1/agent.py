@@ -1,13 +1,64 @@
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
 from app.agent.service import AgentService
+from app.core.llm_stream import reset_llm_stream_handlers, set_llm_stream_handlers
 from app.core.response import ApiResponse, success_response
+from app.core.sse import SSE_HEADERS, EventBridge, sse_event, stream_error_message
+from app.schemas.agent import AgentStatusRead
 from app.schemas.agent import AgentConfirmInput, AgentRejectInput, AgentStatusRead
 
 
 router = APIRouter(tags=["任务分析 Agent"])
+
+
+@router.post(
+    "/tasks/{task_id}/agent/start/stream",
+    response_model=None,
+    summary="流式启动任务分析 Agent（SSE）",
+)
+async def start_agent_stream(task_id: uuid.UUID) -> StreamingResponse:
+    """SSE 事件流：stage（Agent 阶段）/ delta（大模型增量）/ result / error。"""
+
+    async def event_source() -> AsyncIterator[str]:
+        bridge = EventBridge()
+        tokens = set_llm_stream_handlers(bridge.emit_delta, bridge.emit_stage)
+        task: asyncio.Task[AgentStatusRead] | None = None
+        try:
+            await bridge.emit_stage(
+                "agent",
+                "Agent 流程已启动，正在解析标书…",
+            )
+            task = asyncio.create_task(AgentService.start(task_id))
+            async for event in bridge.pump(task):
+                yield sse_event(event)
+            result = task.result()
+            message = (
+                "解析完成，请确认解析结果"
+                if result.is_waiting_confirmation
+                else "Agent 流程执行结束"
+            )
+            await bridge.emit_stage("done", message)
+            yield sse_event(
+                {"type": "result", "data": result.model_dump(mode="json")}
+            )
+        except Exception as exc:
+            code, message = stream_error_message(exc)
+            yield sse_event({"type": "error", "code": code, "message": message})
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+            reset_llm_stream_handlers(tokens)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @router.post(

@@ -60,6 +60,11 @@ export interface ParseResultRecord {
   reject_reason: string | null
   status: 'success' | 'failed'
   result: ParseResult | null
+  llm_prompt: {
+    messages?: Array<{ role: string; content: string }>
+    schema?: Record<string, unknown>
+  } | null
+  raw_llm_response: string | null
   error_message: string | null
   created_at: string
   updated_at: string

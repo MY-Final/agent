@@ -14,7 +14,7 @@ import {
 import { isTauri } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { ElMessage, type UploadFile, type UploadRawFile } from 'element-plus'
-import { getErrorMessage, isNotFoundError } from '@/api/client'
+import { ApiRequestError, getErrorMessage, isNotFoundError } from '@/api/client'
 import { taskApi } from '@/api/tasks'
 import { templateApi } from '@/api/templates'
 import AgentProgressPanel from '@/components/AgentProgressPanel.vue'
@@ -41,6 +41,9 @@ const activeTab = ref('files')
 const pageLoading = ref(false)
 const refreshing = ref(false)
 const agentActionLoading = ref(false)
+const streamingActive = ref(false)
+const streamingStage = ref('')
+const streamingText = ref('')
 const uploadLoading = ref(false)
 const confirmDialogVisible = ref(false)
 const confirmationRemark = ref('')
@@ -155,16 +158,36 @@ async function initialize(): Promise<void> {
 async function startAgent(): Promise<void> {
   if (!canStart.value) return
   agentActionLoading.value = true
+  streamingActive.value = true
+  streamingStage.value = ''
+  streamingText.value = ''
   try {
-    agentStatus.value = await taskApi.startAgent(taskId.value)
+    let finalStatus: AgentStatus | null = null
+    for await (const event of taskApi.startAgentStream(taskId.value)) {
+      if (event.type === 'stage') {
+        streamingStage.value = String(event.message ?? '')
+      } else if (event.type === 'delta') {
+        streamingText.value += String(event.content ?? '')
+      } else if (event.type === 'result') {
+        finalStatus = event.data as AgentStatus
+      } else if (event.type === 'error') {
+        throw new ApiRequestError(
+          String(event.message ?? 'Agent 执行失败'),
+          typeof event.code === 'number' ? event.code : undefined,
+        )
+      }
+    }
+    if (!finalStatus) throw new ApiRequestError('Agent 未返回执行结果')
+    agentStatus.value = finalStatus
     await Promise.all([loadTask(), loadParseResults()])
-    activeTab.value = agentStatus.value.is_waiting_confirmation ? 'parse' : 'progress'
-    ElMessage.success(agentStatus.value.is_waiting_confirmation ? '解析完成，请确认解析结果' : 'Agent 已启动')
+    activeTab.value = finalStatus.is_waiting_confirmation ? 'parse' : 'progress'
+    ElMessage.success(finalStatus.is_waiting_confirmation ? '解析完成，请确认解析结果' : 'Agent 已启动')
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
     await refreshAll()
   } finally {
     agentActionLoading.value = false
+    streamingActive.value = false
   }
 }
 
@@ -417,6 +440,14 @@ onBeforeUnmount(() => {
 
           <el-tab-pane label="状态与进度" name="progress">
             <AgentProgressPanel :status="agentStatus" :task-status="task.status" :loading="refreshing" />
+            <section v-if="streamingActive || streamingText" class="stream-panel">
+              <div class="stream-header">
+                <span class="stream-dot" />
+                <strong>大模型实时输出</strong>
+                <span v-if="streamingStage" class="stream-stage">{{ streamingStage }}</span>
+              </div>
+              <pre class="stream-content">{{ streamingText || '等待大模型输出…' }}</pre>
+            </section>
           </el-tab-pane>
         </el-tabs>
       </section>
@@ -707,6 +738,58 @@ onBeforeUnmount(() => {
   color: var(--text-tertiary);
   font-size: 11px;
   line-height: 1.6;
+}
+
+.stream-panel {
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.stream-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--bg-secondary, #fafafa);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+}
+
+.stream-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--primary-color);
+  border-radius: 50%;
+  animation: stream-blink 1s ease-in-out infinite;
+}
+
+.stream-stage {
+  overflow: hidden;
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stream-content {
+  max-height: 260px;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--bg-primary, #fff);
+}
+
+@keyframes stream-blink {
+  50% { opacity: 0.3; }
 }
 
 @keyframes banner-pulse {
