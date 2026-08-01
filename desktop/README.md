@@ -110,20 +110,26 @@ src-tauri/target/release/bundle/msi/投标分析工作台_0.1.0_x64_zh-CN.msi   
 
 Tauri 安装包只包含桌面 GUI。部署方先启动 FastAPI 及 PostgreSQL、Redis、MinIO，用户再在桌面程序中填写后端地址。单机部署可继续使用 `http://127.0.0.1:8000`；局域网部署则填写服务器地址。此方案构建简单、日志和服务升级独立，适合当前阶段。
 
-### 方案 B：后端作为 Sidecar（后续升级）
+### 方案 B：后端作为 Sidecar（基础骨架已实现）
 
-可使用 PyInstaller 或 Nuitka 将 FastAPI 后端打成 Windows 可执行文件，再通过 Tauri `externalBin` 打入安装包。具体步骤：
+桌面程序启动时会自动拉起打包进安装包的后端，前端自动连接动态端口，退出时关闭后端子进程。当前链路：
 
-1. 用 PyInstaller 把后端打成单文件可执行程序（在 Windows 上执行）：
+```text
+打包后端 exe -> Tauri externalBin -> 应用启动探测空闲端口 -> 拉起后端
+-> 轮询 /health 就绪 -> 前端自动切到 http://127.0.0.1:<动态端口>
+-> 应用退出时杀掉后端子进程
+```
+
+1. 打包后端侧车（Windows，先排除 OCR 以缩小体积）：
 
    ```powershell
    cd D:\Repos\agent\backend
-   pip install pyinstaller
-   pyinstaller --onefile --name tender-backend --collect-all paddleocr app/main.py
+   .\pack_sidecar.ps1
    ```
 
-   将 `dist/tender-backend.exe` 放到 `desktop/src-tauri/binaries/`（目录名由 Tauri 侧车命名规则决定）。
-2. 在 `tauri.conf.json` 的 `bundle` 中加入侧车：
+   脚本会用 PyInstaller 生成 `dist/tender-backend.exe`，并复制到
+   `desktop/src-tauri/binaries/tender-backend-x86_64-pc-windows-msvc.exe`。
+2. 侧车配置已内置在 `tauri.conf.json`：
 
    ```json
    {
@@ -132,13 +138,21 @@ Tauri 安装包只包含桌面 GUI。部署方先启动 FastAPI 及 PostgreSQL�
      }
    }
    ```
-3. Rust 侧使用 `tauri-plugin-shell` 的 sidecar API 启动后端：
-   - 启动时先探测一个空闲端口（如从 8000 起尝试），写入环境变量或启动参数，再 `Command::new_sidecar("tender-backend")` 拉起；
-   - 轮询 `http://127.0.0.1:<port>/health`，健康通过后再让前端进入业务页；
-   - 应用退出时终止子进程（`on_window_event` / 退出钩子），避免留下孤儿进程。
-4. 需在 `capabilities/default.json` 增加 `shell:allow-execute`（或更窄的 sidecar 权限），并把默认后端地址改为动态端口。
+3. Rust 侧（`src-tauri/src/lib.rs`）已实现：探测 18000-18019 空闲端口 → 用标准库拉起
+   `tender-backend.exe --port <port>` → 原始 TCP 轮询 `/health`（最长 60 秒）→
+   暴露 `get_backend_url` 命令；前端 `src/main.ts` 启动时调用该命令，拿到动态地址后写入
+   本地存储，后续所有 API 请求自动指向侧车；应用退出（`RunEvent::Exit`）时杀掉子进程。
+   开发模式（`tauri dev`）不拉起侧车，仍使用手动启动的 `http://127.0.0.1:8000`。
 
-实施时还需处理：端口冲突、异常退出、日志目录、临时文件、杀毒软件误报、子进程权限和约定关闭；并决定 PostgreSQL、Redis、MinIO 是继续作为外部服务，还是替换为适合单机嵌入的存储。OCR 和 Python 运行时会明显增加安装包体积。本阶段不自动集成后端。
+注意：
+
+- 打包后的后端从 `%LOCALAPPDATA%\TenderAnalysis\runtime.env.json` 读取
+  PostgreSQL/Redis/MinIO 配置（即系统设置页保存的那份）；未配置或基础设施不可用时后端无法启动，
+  桌面端会回退到手动后端地址并提示连接失败。
+- 当前侧车已排除 OCR（`paddleocr`/`paddlepaddle`），扫描版 PDF 识别会失败；需要时去掉
+  `pack_sidecar.ps1` 里的 `--exclude-module` 再打包（体积会显著增大）。
+- 基础设施仍是外部服务（PostgreSQL/Redis/MinIO），尚未做单机嵌入存储；这是"双击即用"的下一步。
+- 端口冲突、异常退出、日志与杀毒软件误报等仍需在真实分发环境中验证。
 
 ## 发布前检查
 

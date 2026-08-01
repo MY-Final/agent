@@ -27,6 +27,7 @@
   },
   "bundle": {
     "active": true,
+    "externalBin": ["binaries/tender-backend"],
     "targets": ["nsis", "msi"],
     "publisher": "MY-Final",
     "homepage": "https://github.com/MY-Final/agent",
