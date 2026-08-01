@@ -1,0 +1,8 @@
+请根据以下需求设计标书解析模板：
+
+需求：
+{{description}}
+
+{{reference_block}}
+
+请输出 suggested_name、description 和 sections。

@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.skills.prompt_loader import PROMPTS
 from app.schemas.skills.parse import (
     ColumnDefinition,
     ColumnVariant,
@@ -110,41 +111,22 @@ SEED_PARSE_TEMPLATE = ParseTemplate(
 )
 
 
-SUGGEST_SYSTEM_PROMPT = """你是标书解析模板设计器。
-根据用户用自然语言描述的提取重点，设计一套招标文件结构化解析模板。
-要求：
-1. 资格要求表格由系统内置（id=qualifications），你不需要生成该区块，也不要使用这个 id。
-2. 其余区块按用户需求补充，优先覆盖：项目概览、预算金额、项目工期、评分办法、
-   关键时间、废标条款、保证金、付款方式、其他要点等常见标书要素。
-3. section 的 kind 只能是 grid / table / key_value / list；
-   字段 type 只能是 text / number / money / date / boolean。
-4. section id 用小写字母、数字和下划线组成且以字母开头，全局唯一。
-5. grid 区块的 fields 至少一个；table 区块的 columns 至少一列；
-   key_value / list 区块不配置 fields 和 columns。
-6. 输出必须严格符合给定 JSON Schema。"""
-
-
 def build_suggestion_prompt(
     description: str,
     reference_text: str | None,
 ) -> str:
-    """把自然语言需求组装成模板建议的用户消息。"""
+    """把自然语言需求组装成模板建议的用户消息（正文模板见 prompts/）。"""
 
-    lines = [
-        "请根据以下需求设计标书解析模板：",
-        f"需求：{description}",
-    ]
+    reference_block = ""
     if reference_text and reference_text.strip():
-        lines.extend(
-            [
-                "",
-                "参考原文（从中提炼字段会更准确）：",
-                reference_text.strip()[:20000],
-            ]
+        reference_block = (
+            "参考原文（从中提炼字段会更准确）：\n"
+            + reference_text.strip()[:20000]
         )
-    lines.append("")
-    lines.append("请输出 suggested_name、description 和 sections。")
-    return "\n".join(lines)
+    return PROMPTS["suggest_user"].render(
+        description=description,
+        reference_block=reference_block,
+    )
 
 
 def with_core_contract(

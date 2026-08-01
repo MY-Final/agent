@@ -17,6 +17,8 @@ from app.schemas.llm_provider import (
 from app.services.llm_connection_service import LLMConnectionService
 from app.services.llm_provider_service import LLMProviderService, LLMRuntimeConfig
 from app.skills.llm import TenderLLMClient
+from app.skills.parse_template import SEED_PARSE_TEMPLATE
+from app.skills.prompt_loader import PROMPTS
 from app.utils.secrets import looks_like_masked_api_key, mask_api_key
 from app.utils.validation import translate_validation_errors
 
@@ -305,17 +307,21 @@ class LLMConnectionServiceTests(unittest.IsolatedAsyncioTestCase):
 class TenderLLMClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_extract_uses_runtime_provider_configuration(self) -> None:
         result_payload = {
-            "project_name": "测试项目",
-            "project_code": None,
-            "budget": None,
-            "duration": None,
-            "location": None,
-            "purchaser": None,
-            "qualifications": [],
-            "scoring_method": {},
-            "disqualification_items": [],
-            "key_dates": {},
-            "other_key_points": [],
+            "data": {
+                "overview": {
+                    "project_name": "测试项目",
+                    "project_code": None,
+                    "budget": None,
+                    "duration": None,
+                    "location": None,
+                    "purchaser": None,
+                },
+                "qualifications": [],
+                "scoring_method": {},
+                "disqualification_items": [],
+                "key_dates": {},
+                "other_key_points": [],
+            },
             "raw_summary": None,
             "confidence": 0.9,
         }
@@ -324,7 +330,12 @@ class TenderLLMClientTests(unittest.IsolatedAsyncioTestCase):
                 SimpleNamespace(
                     message=SimpleNamespace(content=json.dumps(result_payload))
                 )
-            ]
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=120,
+                completion_tokens=240,
+                total_tokens=360,
+            ),
         )
         create_completion = AsyncMock(return_value=completion)
         close_client = AsyncMock()
@@ -353,7 +364,10 @@ class TenderLLMClientTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch("app.skills.llm.AsyncOpenAI", return_value=fake_client) as client_class,
         ):
-            result = await TenderLLMClient().extract("测试标书原文")
+            result = await TenderLLMClient().extract(
+                "测试标书原文",
+                SEED_PARSE_TEMPLATE,
+            )
 
         self.assertEqual(result.project_name, "测试项目")
         client_class.assert_called_once_with(
@@ -365,6 +379,11 @@ class TenderLLMClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_options["model"], "database-model")
         self.assertEqual(call_options["temperature"], 0.2)
         self.assertNotIn("ignored_option", call_options)
+        self.assertEqual(
+            call_options["messages"][0],
+            {"role": "system", "content": PROMPTS["extract_system"].content},
+        )
+        self.assertIn("测试标书原文", call_options["messages"][1]["content"])
         close_client.assert_awaited_once()
 
 

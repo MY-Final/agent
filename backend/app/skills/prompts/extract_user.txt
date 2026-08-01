@@ -1,0 +1,13 @@
+请从下面的"招标文件原文"中抽取结构化信息。
+
+需要抽取的模板字段说明：
+<template>
+{{template_description}}
+</template>
+
+招标文件原文：
+<source>
+{{tender_text}}
+</source>
+
+请严格按模板字段输出 data，并按要求输出 raw_summary 和 confidence。

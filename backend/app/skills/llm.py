@@ -22,8 +22,8 @@ from app.schemas.parse_template import TemplateSuggestion
 from app.schemas.skills.parse import ParseResult, ParseTemplate, SectionKind
 from app.services.llm_provider_service import LLMRuntimeConfig, get_current_llm_config
 from app.services.llm_usage_service import LLMUsageService
+from app.skills.prompt_loader import PROMPTS
 from app.skills.parse_template import (
-    SUGGEST_SYSTEM_PROMPT,
     build_extraction_schema,
     build_suggestion_prompt,
     describe_template,
@@ -33,14 +33,6 @@ from app.skills.parse_template import (
 
 
 logger = logging.getLogger(__name__)
-
-SYSTEM_PROMPT = """你是严谨的中文招标文件结构化抽取器。
-只能根据用户提供的原文抽取，禁止补充常识、猜测或编造。
-重点识别资格要求、评分办法、废标条款和关键时间节点。
-原文没有的信息必须返回 null、空数组或空对象。
-qualification.category 使用：资质、业绩、人员、财务、其他。
-confidence 为 0 到 1，表示结果受原文清晰度支持的整体置信度。
-输出必须严格符合给定 JSON Schema，data 中不得新增模板之外的键。"""
 
 
 class TenderLLMClient:
@@ -208,14 +200,12 @@ class TenderLLMClient:
     ) -> ParseResult:
         config, client = await self._make_client()
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": PROMPTS["extract_system"].content},
             {
                 "role": "user",
-                "content": (
-                    "请从以下招标文件原文中提取结构化信息，严格按模板填写 data：\n\n"
-                    f"{describe_template(template)}\n\n"
-                    "原文：\n"
-                    + tender_text
+                "content": PROMPTS["extract_user"].render(
+                    template_description=describe_template(template),
+                    tender_text=tender_text,
                 ),
             },
         ]
@@ -274,7 +264,7 @@ class TenderLLMClient:
 
         config, client = await self._make_client()
         messages = [
-            {"role": "system", "content": SUGGEST_SYSTEM_PROMPT},
+            {"role": "system", "content": PROMPTS["suggest_system"].content},
             {
                 "role": "user",
                 "content": build_suggestion_prompt(description, reference_text),
