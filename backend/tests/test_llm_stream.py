@@ -35,7 +35,59 @@ def _chunk(piece: str | None = None, usage: SimpleNamespace | None = None) -> Si
     return SimpleNamespace(choices=[SimpleNamespace(delta=delta)], usage=usage)
 
 
+def _reasoning_chunk(reasoning: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content=None, reasoning_content=reasoning)
+            )
+        ],
+        usage=None,
+    )
+
+
 class StreamContentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_captures_reasoning_content(self) -> None:
+        collected: list[str] = []
+        thinking: list[str] = []
+
+        async def collect(piece: str) -> None:
+            collected.append(piece)
+
+        async def think(piece: str) -> None:
+            thinking.append(piece)
+
+        async def create_stream(*_args: object, **_kwargs: object) -> object:
+            return _async_chunks(
+                _reasoning_chunk("先检查资格要求部分"),
+                _chunk("答案"),
+            )
+
+        config = _runtime_config()
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create_stream)),
+            close=mock.AsyncMock(),
+        )
+        with mock.patch(
+            "app.skills.llm.LLMUsageService.record_usage",
+            new=mock.AsyncMock(),
+        ):
+            content = await TenderLLMClient()._stream_content(
+                config,
+                client,
+                [{"role": "user", "content": "hi"}],
+                "",
+                None,
+                purpose="chat",
+                task_id=None,
+                on_delta=collect,
+                on_thinking=think,
+            )
+
+        self.assertEqual(content, "答案")
+        self.assertEqual(collected, ["答案"])
+        self.assertEqual(thinking, ["先检查资格要求部分"])
+
     async def test_chat_plain_stream_omits_response_format(self) -> None:
         collected: list[str] = []
 

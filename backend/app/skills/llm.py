@@ -90,6 +90,7 @@ class TenderLLMClient:
         purpose: str,
         task_id: uuid.UUID | None = None,
         on_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_thinking: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """发起请求：有流式回调时走流式，否则走一次性请求。
 
@@ -105,6 +106,13 @@ class TenderLLMClient:
             delivered = True
             await delta_callback(piece)
 
+        async def tracked_thinking(piece: str) -> None:
+            nonlocal delivered
+            # 思考过程也属于已输出的内容：已展示后不再整轮重试，避免重复。
+            delivered = True
+            if on_thinking is not None:
+                await on_thinking(piece)
+
         for attempt in range(_MAX_RETRIES + 1):
             delivered = False
             try:
@@ -118,6 +126,9 @@ class TenderLLMClient:
                         purpose=purpose,
                         task_id=task_id,
                         on_delta=tracked_delta,
+                        on_thinking=(
+                            tracked_thinking if on_thinking is not None else None
+                        ),
                     )
                 return await self._request_content_once(
                     config,
@@ -269,6 +280,7 @@ class TenderLLMClient:
         purpose: str,
         task_id: uuid.UUID | None,
         on_delta: Callable[[str], Awaitable[None]],
+        on_thinking: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """流式请求：逐段回调增量内容，返回完整内容。
 
@@ -327,6 +339,7 @@ class TenderLLMClient:
             content_parts, usage = await self._consume_stream(
                 stream,
                 tracked_on_delta,
+                on_thinking,
             )
         except BadRequestError as exc:
             if schema is None:
@@ -362,6 +375,7 @@ class TenderLLMClient:
                 content_parts, usage = await self._consume_stream(
                     stream,
                     tracked_on_delta,
+                    on_thinking,
                 )
             except BadRequestError as exc2:
                 # 流式整体不可用：退回一次性请求（该路径不会再进入流式），
@@ -463,6 +477,7 @@ class TenderLLMClient:
         self,
         stream: Any,
         on_delta: Callable[[str], Awaitable[None]],
+        on_thinking: Callable[[str], Awaitable[None]] | None = None,
     ) -> tuple[list[str], Any]:
         """消费流式响应：累计内容并逐段回调，返回（内容片段列表, usage）。"""
 
@@ -476,6 +491,15 @@ class TenderLLMClient:
             if piece:
                 content_parts.append(piece)
                 await on_delta(piece)
+            if on_thinking is not None:
+                delta = chunk.choices[0].delta
+                thinking_piece = getattr(delta, "reasoning_content", None) or getattr(
+                    delta,
+                    "thinking_content",
+                    None,
+                )
+                if thinking_piece:
+                    await on_thinking(thinking_piece)
         return content_parts, usage
 
     @staticmethod
@@ -659,6 +683,7 @@ class TenderLLMClient:
         question: str,
         task_id: uuid.UUID | None = None,
         on_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_thinking: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """基于给定背景信息流式回答用户问题（纯文本，无 JSON Schema）。"""
 
@@ -684,6 +709,7 @@ class TenderLLMClient:
                 purpose="chat",
                 task_id=task_id,
                 on_delta=on_delta,
+                on_thinking=on_thinking,
             )
         finally:
             with suppress(Exception):

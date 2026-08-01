@@ -48,6 +48,9 @@ class EventBridge:
     async def emit_delta(self, content: str) -> None:
         await self.emit({"type": "delta", "content": content})
 
+    async def emit_thinking(self, content: str) -> None:
+        await self.emit({"type": "thinking", "content": content})
+
     async def pump(
         self,
         task: asyncio.Task[Any],

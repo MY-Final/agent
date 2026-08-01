@@ -234,6 +234,7 @@ class AgentService:
         task_id: uuid.UUID,
         question: str,
         on_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_thinking: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """基于最新解析结果与原文，在当前 Agent 会话内继续对话。"""
 
@@ -273,6 +274,7 @@ class AgentService:
             question=question,
             task_id=task_id,
             on_delta=on_delta,
+            on_thinking=on_thinking,
         )
 
         async with AsyncSessionFactory() as session:
@@ -290,6 +292,19 @@ class AgentService:
                 run.extra = extra
                 await session.commit()
         return answer
+
+    @staticmethod
+    async def get_chat_history(
+        task_id: uuid.UUID,
+    ) -> list[dict[str, str]]:
+        """返回当前 Agent 会话保存的对话历史（无记录时为空列表）。"""
+
+        async with AsyncSessionFactory() as session:
+            await AgentService._get_task(session, task_id)
+            run = await AgentService._get_latest_run(session, task_id)
+            if run is None:
+                return []
+            return list((run.extra or {}).get(_CHAT_HISTORY_KEY) or [])
 
     @staticmethod
     def _build_chat_context(

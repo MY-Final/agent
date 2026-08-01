@@ -1,6 +1,7 @@
 import { agentRequestConfig, request, streamSse } from './client'
 import type { HealthData } from '@/types/api'
 import type { AgentStatus } from '@/types/agent'
+import type { AgentChatMessage } from '@/types/agent'
 import type {
   MatchResultRecord,
   ParseResultRecord,
@@ -72,6 +73,12 @@ export const taskApi = {
 
   chatAgentStream: (taskId: string, question: string) =>
     streamSse(`/api/v1/tasks/${taskId}/agent/chat/stream`, { question }),
+
+  getChatHistory: (taskId: string) =>
+    request<AgentChatMessage[]>({
+      method: 'GET',
+      url: `/api/v1/tasks/${taskId}/agent/chat/history`,
+    }),
 
   getAgentStatus: (taskId: string) =>
     request<AgentStatus>({ method: 'GET', url: `/api/v1/tasks/${taskId}/agent/status` }),

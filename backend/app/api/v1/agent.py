@@ -12,6 +12,7 @@ from app.core.sse import SSE_HEADERS, EventBridge, sse_event, stream_error_messa
 from app.schemas.agent import AgentStatusRead
 from app.schemas.agent import (
     AgentChatInput,
+    AgentChatMessage,
     AgentConfirmInput,
     AgentRejectInput,
     AgentStatusRead,
@@ -46,6 +47,7 @@ async def chat_agent_stream(
                     task_id,
                     payload.question,
                     on_delta=bridge.emit_delta,
+                    on_thinking=bridge.emit_thinking,
                 )
             )
             async for event in bridge.pump(task):
@@ -66,6 +68,18 @@ async def chat_agent_stream(
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
+
+
+@router.get(
+    "/tasks/{task_id}/agent/chat/history",
+    response_model=ApiResponse[list[AgentChatMessage]],
+    summary="获取当前任务 Agent 的对话历史",
+)
+async def get_agent_chat_history(
+    task_id: uuid.UUID,
+) -> ApiResponse[list[AgentChatMessage]]:
+    messages = await AgentService.get_chat_history(task_id)
+    return success_response(messages, msg="对话历史获取成功")
 
 
 @router.post(

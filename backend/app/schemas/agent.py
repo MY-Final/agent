@@ -37,6 +37,11 @@ class AgentChatInput(BaseModel):
     )
 
 
+class AgentChatMessage(BaseModel):
+    role: str = Field(description="user 或 assistant")
+    content: str
+
+
 class AgentParseSummary(BaseModel):
     project_name: str | None = None
     project_code: str | None = None

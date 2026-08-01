@@ -52,3 +52,8 @@ export interface AgentStatus {
   created_at: string
   updated_at: string
 }
+
+export interface AgentChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
