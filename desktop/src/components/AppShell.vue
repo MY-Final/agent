@@ -142,7 +142,7 @@ function navigate(path: string): void {
           <span class="connection-icon"><el-icon><Connection /></el-icon></span>
           <span class="connection-text">
             <strong>{{ connectionLabel }}</strong>
-            <small>{{ settings.backendUrl }}</small>
+            <small>{{ settings.displayBackendUrl }}</small>
           </span>
           <el-icon><Setting /></el-icon>
         </button>

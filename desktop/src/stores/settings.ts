@@ -6,7 +6,7 @@ import type { HealthData } from '@/types/api'
 import type { CurrentLLMConfig, LLMProvider } from '@/types/llm'
 import {
   BACKEND_URL_KEY,
-  DEFAULT_BACKEND_URL,
+  getDefaultBackendUrl,
   getStoredBackendUrl,
   normalizeBackendUrl,
 } from '@/utils/settings'
@@ -21,9 +21,13 @@ export const useSettingsStore = defineStore('settings', () => {
   const llmLoading = ref(false)
 
   const isHealthy = computed(() => health.value?.status === 'healthy')
+  const displayBackendUrl = computed(() => {
+    if (backendUrl.value) return backendUrl.value
+    return typeof window !== 'undefined' && window.location.origin ? window.location.origin : ''
+  })
 
   function saveBackendUrl(value: string): void {
-    const normalized = normalizeBackendUrl(value) || DEFAULT_BACKEND_URL
+    const normalized = normalizeBackendUrl(value) || getDefaultBackendUrl()
     backendUrl.value = normalized
     localStorage.setItem(BACKEND_URL_KEY, normalized)
   }
@@ -64,6 +68,7 @@ export const useSettingsStore = defineStore('settings', () => {
     checking,
     lastCheckedAt,
     isHealthy,
+    displayBackendUrl,
     llmProviders,
     currentLLMConfig,
     llmLoading,

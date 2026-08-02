@@ -101,6 +101,20 @@ services:
     networks:
       - backend
 
+  web:
+    build:
+      context: ./desktop
+      args:
+        VITE_BACKEND_URL: ${VITE_BACKEND_URL:-}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80" # Web 前端（nginx 托管，/api 反代到 backend）
+    networks:
+      - backend
+
 networks:
   backend:
 

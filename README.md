@@ -66,6 +66,83 @@ agent/
 - PostgreSQL、Redis 和 MinIO
 - 可用的 OpenAI 兼容模型接口
 
+## 部署
+
+### 方式一：Docker Compose 部署（推荐，服务器）
+
+前置：服务器安装 Docker Engine 20.10+ 与 Compose 插件（`docker compose version` 验证）。
+
+```bash
+# 1. 准备环境变量（务必修改默认口令，并填写 LLM_API_KEY）
+cp deploy/.env.example .env
+vi .env
+
+# 2. 构建并启动：postgres + redis + minio + backend 一套服务
+docker compose up -d --build
+
+# 3. 验证
+docker compose ps
+curl http://127.0.0.1:8000/health
+```
+
+启动后浏览器访问 `http://<服务器IP>:8080` 即可使用 Web 版前端（nginx 托管，`/api` 自动反代到后端，支持流式接口）；Windows 桌面端安装包用法不变，连接 `http://<服务器IP>:8000`。如需前端构建时指向其他后端地址，设置 `VITE_BACKEND_URL`（见 deploy/.env.example）。
+
+升级、停止、备份等日常运维见 [deploy/README.md](deploy/README.md)；只部署基础设施（MinIO / Redis / PostgreSQL / 可选 MySQL）见 [deploy/infra-deployment.md](deploy/infra-deployment.md)。
+
+### 方式二：源码部署（无 Docker）
+
+需要先准备三个依赖服务：PostgreSQL、Redis、MinIO。两种方式任选：
+
+- 本机已安装或手动安装，使用默认端口 `5432 / 6379 / 9000`；
+- 或只借助 Docker 启动这三个服务（对外端口 `15432 / 16379 / 29000`）：
+
+  ```bash
+  cp deploy/infra.env.example deploy/infra.env
+  vi deploy/infra.env   # 修改各服务口令
+  docker compose --env-file deploy/infra.env -f deploy/infra.docker-compose.yml up -d
+  ```
+
+启动后端（Windows PowerShell）：
+
+```powershell
+cd backend
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+修改 `backend/.env` 中的连接配置，端口与上面的准备方式对应（本机默认端口则改为 `5432 / 6379 / 9000`）：
+
+```dotenv
+DATABASE_URL=postgresql+asyncpg://postgres:口令@localhost:15432/postgres
+REDIS_URL=redis://localhost:16379/0
+MINIO_ENDPOINT=localhost:29000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=口令
+MINIO_SECURE=false
+LLM_API_KEY=你的密钥
+```
+
+启动并验证：
+
+```powershell
+python -m app
+# 或 uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+健康检查 <http://127.0.0.1:8000/health>，接口文档 <http://127.0.0.1:8000/docs>。
+
+桌面端：
+
+```powershell
+cd desktop
+npm install
+npm run tauri dev
+```
+
+打包 Windows 安装包（NSIS / MSI）见下文「Windows 安装包」。
+
 ## 启动后端
 
 首次运行时，在 PowerShell 中执行：
