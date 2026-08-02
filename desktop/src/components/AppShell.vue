@@ -10,6 +10,7 @@ import {
   Files,
   Medal,
   Plus,
+  Reading,
   SetUp,
   Setting,
 } from '@element-plus/icons-vue'
@@ -27,6 +28,7 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/templates')) return '/templates'
   if (route.path.startsWith('/knowledge')) return '/knowledge'
   if (route.path.startsWith('/stats')) return '/stats'
+  if (route.path.startsWith('/guide')) return '/guide'
   if (route.path.startsWith('/tasks/new')) return '/tasks/new'
   if (route.path.startsWith('/tasks')) return '/tasks'
   return '/'
@@ -85,6 +87,15 @@ function navigate(path: string): void {
         >
           <el-icon><Plus /></el-icon>
           <span>新建任务</span>
+        </button>
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: activeMenu === '/guide' }"
+          @click="navigate('/guide')"
+        >
+          <el-icon><Reading /></el-icon>
+          <span>使用指南</span>
         </button>
 
         <span class="nav-label nav-label-secondary">配置</span>

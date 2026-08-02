@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft, DocumentAdd, UploadFilled } from '@element-plus/icons-vue'
+import { ArrowLeft, DocumentAdd, QuestionFilled, UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage, type FormInstance, type FormRules, type UploadFile, type UploadRawFile } from 'element-plus'
 import { getErrorMessage } from '@/api/client'
 import { taskApi } from '@/api/tasks'
@@ -109,6 +109,9 @@ onMounted(() => {
         <h1 class="page-title">新建分析任务</h1>
         <p class="page-subtitle">填写项目基础信息并上传一份标书，创建后即可启动 Agent 分析。</p>
       </div>
+      <el-button text :icon="QuestionFilled" @click="router.push({ name: 'guide', hash: '#quickstart' })">
+        使用示例
+      </el-button>
     </header>
 
     <div class="create-layout">

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   Delete,
   EditPen,
   MagicStick,
   Plus,
+  QuestionFilled,
   Refresh,
   Search,
   Star,
@@ -17,6 +19,9 @@ import TemplateEditorDrawer from '@/components/TemplateEditorDrawer.vue'
 import type { SectionDefinition } from '@/types/results'
 import type { ParseTemplateRecord, TemplateSuggestion } from '@/types/template'
 import { formatDate } from '@/utils/format'
+
+const route = useRoute()
+const router = useRouter()
 
 const templates = ref<ParseTemplateRecord[]>([])
 const loading = ref(false)
@@ -166,6 +171,12 @@ function sectionSummary(template: ParseTemplateRecord): string {
 
 onMounted(() => {
   void loadTemplates()
+  const raw = route.query.suggest
+  const index = typeof raw === 'string' ? Number(raw) : Number.NaN
+  if (Number.isInteger(index) && index >= 0 && index < SUGGEST_EXAMPLES.length) {
+    openSuggest()
+    suggestionDescription.value = SUGGEST_EXAMPLES[index]
+  }
 })
 </script>
 
@@ -188,6 +199,9 @@ onMounted(() => {
             @click="loadTemplates"
           />
         </el-tooltip>
+        <el-button text :icon="QuestionFilled" @click="router.push({ name: 'guide', hash: '#templates' })">
+          使用示例
+        </el-button>
         <el-button :icon="MagicStick" class="ai-button" @click="openSuggest">AI 生成模板</el-button>
         <el-button type="primary" :icon="Plus" @click="openCreate">新建模板</el-button>
       </div>
