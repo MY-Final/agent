@@ -70,6 +70,8 @@ docker compose --env-file deploy/infra.env -f deploy/infra.docker-compose.yml up
 
 该文件用宿主机目录持久化数据，方便直接备份。注意 `redis.conf` 必须先存在于宿主机，否则 Docker 会把它当成目录，导致 Redis 启动失败。
 
+完整的分步部署、验证、备份与排障说明见 [基础设施独立部署指南](infra-deployment.md)。
+
 ## 日常运维
 
 ```bash
