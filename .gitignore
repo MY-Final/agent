@@ -1,5 +1,6 @@
 .idea/
 .env
+deploy/infra.env
 runtime.env.json
 .venv/
 desktop/src-tauri/binaries/*.exe

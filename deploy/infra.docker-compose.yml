@@ -1,0 +1,107 @@
+# 基础设施独立编排（MinIO / Redis / PostgreSQL / MySQL）
+# 与仓库根目录 docker-compose.yml（全栈编排）互不影响，可单独部署。
+# 数据使用宿主机目录持久化（/opt/dockerApp/...），便于查看和备份。
+# 口令统一通过 .env 注入，不要把真实口令写进本文件。
+#
+# 启动：
+#   docker compose --env-file deploy/infra.env -f deploy/infra.docker-compose.yml up -d
+
+name: tender-infra
+
+services:
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio
+    restart: always
+    ports:
+      - "29000:9000"   # S3 API 端口（程序/SDK 使用）
+      - "29001:9001"   # Web 控制台端口（浏览器登录）
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-please}
+      TZ: Asia/Shanghai
+    volumes:
+      - /opt/dockerApp/minio/data:/data           # 文件数据持久化
+      - /opt/dockerApp/minio/config:/root/.minio  # MinIO 配置持久化
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  redis:
+    image: redis:7.2.12
+    container_name: redis_localhost
+    restart: always
+    ports:
+      - "16379:6379"
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - /opt/dockerApp/redis/data:/data
+      - /opt/dockerApp/redis/conf/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - /opt/dockerApp/redis/logs:/logs
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: local-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-please}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      TZ: Asia/Shanghai
+    ports:
+      - "15432:5432"
+    volumes:
+      - /opt/dockerApp/postgresql/data:/var/lib/postgresql/data
+      - /opt/dockerApp/postgresql/backup:/backup
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 以下两个 MySQL 来自其他项目（astrbot 等），本项目（tender-agent）使用 PostgreSQL，不需要可删除。
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-please}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-astrbot_diandian}
+      TZ: Asia/Shanghai
+    ports:
+      - "13306:3306"
+    volumes:
+      - /opt/dockerApp/mysql/data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mysql_local:
+    image: mysql:8.0
+    container_name: mysql_local
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_LOCAL_ROOT_PASSWORD:-change-me-please}
+      MYSQL_DATABASE: ${MYSQL_LOCAL_DATABASE:-local_db}
+      TZ: Asia/Shanghai
+    ports:
+      - "33306:3306"
+    volumes:
+      - /opt/dockerApp/mysql_local/data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

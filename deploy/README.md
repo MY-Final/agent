@@ -51,6 +51,25 @@ docker compose ps
 WITH_OCR=true docker compose up -d --build backend
 ```
 
+## 仅部署基础设施（可选）
+
+如果只想单独跑 PostgreSQL / Redis / MinIO（不启动 backend），或者还需要 MySQL，使用独立的 `infra.docker-compose.yml`，与本仓库根目录的全栈编排互不冲突：
+
+```bash
+cp deploy/infra.env.example deploy/infra.env
+vi deploy/infra.env   # 至少修改各服务的口令
+docker compose --env-file deploy/infra.env -f deploy/infra.docker-compose.yml up -d
+```
+
+| 服务 | 端口 | 说明 |
+| --- | --- | --- |
+| minio | 29000（S3 API）/ 29001（控制台） | 对象存储，数据在 `/opt/dockerApp/minio` |
+| redis | 16379 | 缓存，需先在 `/opt/dockerApp/redis/conf/` 放好 `redis.conf` |
+| postgres | 15432 | 业务数据库，数据在 `/opt/dockerApp/postgresql` |
+| mysql / mysql_local | 13306 / 33306 | 其他项目使用，本项目不需要可删除 |
+
+该文件用宿主机目录持久化数据，方便直接备份。注意 `redis.conf` 必须先存在于宿主机，否则 Docker 会把它当成目录，导致 Redis 启动失败。
+
 ## 日常运维
 
 ```bash
