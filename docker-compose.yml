@@ -76,7 +76,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-tender-files}
       MINIO_SECURE: "false"
-      CORS_ORIGINS: "${CORS_ORIGINS:-*}"
+      CORS_ORIGINS: '${CORS_ORIGINS:-["*"]}'
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL_NAME: ${LLM_MODEL_NAME:-gpt-4.1-mini}

@@ -40,7 +40,7 @@ Web 前端：浏览器访问 `http://<服务器IP>:8080`。前端由 nginx 容�
 | `MINIO_BUCKET` | tender-files | 标书文件桶，首次启动自动创建 |
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL_NAME` | 空 / 空 / gpt-4.1-mini | 未在数据库配置默认提供商时的回退配置 |
 | `WITH_OCR` | false | true 时镜像安装 PaddleOCR（CPU 版，体积 +2GB） |
-| `CORS_ORIGINS` | * | 逗号分隔列表，桌面端直连一般保持 * |
+| `CORS_ORIGINS` | ["*"] | JSON 数组或逗号分隔列表，桌面端直连一般保持 ["*"] |
 | `VITE_BACKEND_URL` | 空 | Web 前端构建时指定的后端地址；留空表示同源反代 |
 | `LOG_LEVEL` / `PDF_TEXT_MIN_CHARS` / `OCR_LANGUAGE` / `OCR_RENDER_SCALE` | INFO / 300 / ch / 2.0 | 日志与扫描件 OCR 调参 |
 

@@ -1,7 +1,9 @@
+import json
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
 from app.core.runtime_config import (
@@ -48,7 +50,10 @@ class Settings(BaseSettings):
         alias="MINIO_PRESIGNED_EXPIRY_SECONDS",
     )
 
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"], alias="CORS_ORIGINS")
+    cors_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["*"],
+        alias="CORS_ORIGINS",
+    )
     max_upload_size_bytes: int = Field(
         default=500 * 1024 * 1024,
         gt=0,
@@ -86,8 +91,14 @@ class Settings(BaseSettings):
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: object) -> object:
-        if isinstance(value, str) and not value.lstrip().startswith("["):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("["):
+                try:
+                    return json.loads(stripped)
+                except json.JSONDecodeError:
+                    pass
+            return [origin.strip() for origin in stripped.split(",") if origin.strip()]
         return value
 
     @field_validator("llm_api_key", "llm_base_url", mode="before")
