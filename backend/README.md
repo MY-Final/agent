@@ -11,9 +11,11 @@
 - aioboto3 + MinIO（S3 兼容）
 - PyMuPDF + PaddleOCR + python-docx
 - OpenAI 兼容结构化输出接口
+- SSE 流式输出（Agent 对话、模板建议、解析详情）
 - 数据库动态管理多个 LLM 提供商，保留 `.env` 回退配置
 - PostgreSQL 结构化资质知识库与规则匹配
 - LangGraph + PostgreSQL checkpoint
+- pydantic-settings 环境配置，`.env.example` 提供完整模板
 
 ## 项目结构
 

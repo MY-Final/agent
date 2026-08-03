@@ -1,6 +1,6 @@
 # 投标分析 Agent
 
-一个面向桌面端的投标分析工具，包含 FastAPI 后端和 Vue 3 + Tauri 2 桌面客户端。当前主流程已打通：
+一个面向桌面端与 Web 的投标分析工具，包含 FastAPI 后端和 Vue 3 + Tauri 2 客户端（桌面与 Web 共用一套前端）。当前主流程已打通：
 
 ```text
 创建任务 -> 上传 PDF/DOCX -> 启动 Agent -> 结构化解析
@@ -36,11 +36,17 @@
 - 所有 AI 调用自动记录用量：token、耗时、预估成本、成功/失败
 - 统计与成本页：调用趋势、按用途/模型/任务分布、任务成功率与平均耗时
 
-**技术底座**
+**技术栈**
 
-- FastAPI + SQLAlchemy + PostgreSQL 持久化，Redis 连接预留，MinIO 文件存储
-- Vue 3 + Element Plus + Tauri 2 桌面工作台，Web 与桌面端共用一套前端
-- 统一中文错误提示与响应结构
+- 后端：Python 3.11 + FastAPI + Pydantic v2，SQLAlchemy 2.0 async + PostgreSQL（业务数据与 LangGraph checkpoint）
+- 缓存/会话：Redis（redis.asyncio）
+- 对象存储：MinIO（S3 兼容，aioboto3）
+- 文档解析：PyMuPDF + PaddleOCR + python-docx
+- Agent 编排：LangGraph 单任务流程（解析 → 人工确认 → 资质匹配）
+- LLM：OpenAI 兼容接口，多提供商动态管理与用量/成本统计
+- 前端：Vue 3 + TypeScript + Vite + Element Plus + Pinia，Tauri 2 桌面端与 Web 浏览器共用一套前端
+- 部署：Docker Compose（nginx 托管 Web 前端并反代后端，PostgreSQL / Redis / MinIO 独立服务）
+- 统一响应结构 `{"code": 0, "msg": "中文说明", "data": ...}`，SSE 流式输出
 
 ## 项目结构
 

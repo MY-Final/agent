@@ -7,6 +7,13 @@
 -> 人工确认 -> 查看公司资质匹配结果
 ```
 
+## 技术栈
+
+- Vue 3 + TypeScript + Vite，Element Plus + Pinia + Vue Router
+- Axios（REST + SSE 流式接口），marked（Markdown 渲染）
+- Tauri 2（Rust 1.88，NSIS / MSI 打包）
+- 同一套前端可构建为 Tauri 桌面端，或由 nginx 容器托管为 Web 端（`/api` 自动反代后端）
+
 ## 已实现功能
 
 - 任务列表、创建、详情、状态跟踪和附件管理
@@ -19,6 +26,7 @@
 - 后端地址配置及 PostgreSQL、Redis、MinIO 健康检查
 - 多 LLM 提供商管理、模型获取、默认模型选择和连接测试
 - Web 调试端与 Tauri 开发端使用独立端口
+- Web 版 Docker 部署：nginx 托管静态资源并反代 `/api`（支持 SSE 流式接口）
 
 ## Windows 环境要求
 
