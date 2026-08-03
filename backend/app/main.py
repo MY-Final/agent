@@ -15,6 +15,7 @@ from starlette.responses import Response
 
 from app.agent.graph import agent_graph_manager
 from app.api.v1.router import api_router
+from app.core.auth import ensure_initialized
 from app.core.config import settings
 from app.core.database import AsyncSessionFactory, close_database, init_database
 from app.core.exceptions import AppException
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("正在启动 %s，运行环境：%s", settings.app_name, settings.app_env)
     try:
+        ensure_initialized()
         await init_database()
         async with AsyncSessionFactory() as session:
             await TemplateService.seed_default_if_empty(session)

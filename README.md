@@ -91,7 +91,7 @@ docker compose ps
 curl http://127.0.0.1:8000/health
 ```
 
-启动后浏览器访问 `http://<服务器IP>:8080` 即可使用 Web 版前端（nginx 托管，`/api` 自动反代到后端，支持流式接口）；Windows 桌面端安装包用法不变，连接 `http://<服务器IP>:8000`。如需前端构建时指向其他后端地址，设置 `VITE_BACKEND_URL`（见 deploy/.env.example）。
+启动后浏览器访问 `http://<服务器IP>:8080` 即可使用 Web 版前端（nginx 托管，`/api` 自动反代到后端，支持流式接口）；Windows 桌面端安装包用法不变，连接 `http://<服务器IP>:8000`。Web 与桌面端均需登录（默认账号 `admin / admin`，首次登录强制修改密码，密码持久化在 `auth_data` 卷）。如需前端构建时指向其他后端地址，设置 `VITE_BACKEND_URL`（见 deploy/.env.example）。
 
 升级、停止、备份等日常运维见 [deploy/README.md](deploy/README.md)；只部署基础设施（MinIO / Redis / PostgreSQL / 可选 MySQL）见 [deploy/infra-deployment.md](deploy/infra-deployment.md)。
 
