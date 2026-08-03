@@ -13,12 +13,15 @@ import {
   Reading,
   SetUp,
   Setting,
+  SwitchButton,
 } from '@element-plus/icons-vue'
 import BackendSettingsDialog from './BackendSettingsDialog.vue'
+import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const settings = useSettingsStore()
 const settingsVisible = ref(false)
 
@@ -45,6 +48,11 @@ onMounted(() => {
 
 function navigate(path: string): void {
   void router.push(path)
+}
+
+function handleLogout(): void {
+  auth.logout()
+  void router.push('/login')
 }
 </script>
 
@@ -145,6 +153,10 @@ function navigate(path: string): void {
             <small>{{ settings.displayBackendUrl }}</small>
           </span>
           <el-icon><Setting /></el-icon>
+        </button>
+        <button v-if="auth.isAuthenticated" type="button" class="logout-button" @click="handleLogout">
+          <el-icon><SwitchButton /></el-icon>
+          <span>退出登录</span>
         </button>
       </div>
     </aside>
@@ -287,6 +299,27 @@ function navigate(path: string): void {
 
 .connection-button:hover {
   background: var(--surface-muted);
+}
+
+.logout-button {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.logout-button:hover {
+  background: var(--danger-soft);
+  color: var(--danger-color);
 }
 
 .connection-icon {

@@ -1,8 +1,15 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { getStoredToken } from '@/utils/auth'
 
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/LoginView.vue'),
+      meta: { title: '登录', public: true },
+    },
     {
       path: '/',
       name: 'dashboard',
@@ -58,6 +65,18 @@ const router = createRouter({
       meta: { title: '系统设置' },
     },
   ],
+})
+
+router.beforeEach((to) => {
+  const hasToken = Boolean(getStoredToken())
+  if (to.meta.public) {
+    if (hasToken && to.name === 'login') return { path: '/', replace: true }
+    return true
+  }
+  if (!hasToken) {
+    return { path: '/login', query: { redirect: to.fullPath }, replace: true }
+  }
+  return true
 })
 
 router.afterEach((to) => {

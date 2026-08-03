@@ -1,5 +1,7 @@
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
+import router from '@/router'
 import type { ApiResponse, HealthData } from '@/types/api'
+import { clearStoredAuth, getStoredToken } from '@/utils/auth'
 import { getStoredBackendUrl, normalizeBackendUrl } from '@/utils/settings'
 
 const AGENT_TIMEOUT_MS = 10 * 60 * 1000
@@ -22,8 +24,28 @@ const http = axios.create({
 
 http.interceptors.request.use((config) => {
   config.baseURL = getStoredBackendUrl()
+  const token = getStoredToken()
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
   return config
 })
+
+http.interceptors.response.use(
+  (response) => response,
+  (error: AxiosError) => {
+    // Token 缺失/过期/无效：清除本地状态并回到登录页（保留原访问地址）
+    if (error.response?.status === 401) {
+      clearStoredAuth()
+      const currentPath = window.location.hash.replace(/^#/, '') || '/'
+      if (!currentPath.startsWith('/login')) {
+        const redirect = encodeURIComponent(currentPath)
+        void router.replace(`/login?redirect=${redirect}`)
+      }
+    }
+    return Promise.reject(error)
+  },
+)
 
 function toRequestError(error: unknown): ApiRequestError {
   if (error instanceof ApiRequestError) return error
@@ -81,9 +103,13 @@ export async function* streamSse(
   signal?: AbortSignal,
 ): AsyncGenerator<SseStreamEvent> {
   /** 用 fetch 读取 SSE 事件流，逐条产出解析后的事件对象。 */
+  const token = getStoredToken()
   const response = await fetch(`${getStoredBackendUrl()}${url}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify(body),
     signal,
   })

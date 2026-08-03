@@ -31,6 +31,8 @@ docker compose ps
 
 Web 前端：浏览器访问 `http://<服务器IP>:8080`。前端由 nginx 容器托管，`/api` 与 `/health` 自动反代到 backend（含 SSE 流式接口），上传上限 600MB，一般无需额外配置；需要指向其他后端地址时，在构建前设置 `VITE_BACKEND_URL`。
 
+Web 与桌面端均需登录：默认账号 `admin / admin`，首次登录会强制要求修改密码（修改后的密码持久化在 `auth_data` 卷中，重启不丢失）。
+
 ## 环境变量说明
 
 | 变量 | 默认值 | 说明 |
@@ -42,6 +44,9 @@ Web 前端：浏览器访问 `http://<服务器IP>:8080`。前端由 nginx 容�
 | `WITH_OCR` | false | true 时镜像安装 PaddleOCR（CPU 版，体积 +2GB） |
 | `CORS_ORIGINS` | ["*"] | JSON 数组或逗号分隔列表，桌面端直连一般保持 ["*"] |
 | `VITE_BACKEND_URL` | 空 | Web 前端构建时指定的后端地址；留空表示同源反代 |
+| `AUTH_USERNAME` / `AUTH_PASSWORD` | admin / admin | 登录账号密码，默认账号首次登录强制改密 |
+| `AUTH_SECRET` | 空 | JWT 签名密钥，留空由 AUTH_PASSWORD 派生；生产建议配置 |
+| `AUTH_TOKEN_TTL_HOURS` | 24 | 登录 Token 有效期（小时） |
 | `LOG_LEVEL` / `PDF_TEXT_MIN_CHARS` / `OCR_LANGUAGE` / `OCR_RENDER_SCALE` | INFO / 300 / ch / 2.0 | 日志与扫描件 OCR 调参 |
 
 大模型提供商也可以在应用内配置：设置 → 大模型提供商，配置会存入数据库并优先生效。

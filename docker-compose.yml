@@ -77,6 +77,10 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET:-tender-files}
       MINIO_SECURE: "false"
       CORS_ORIGINS: '${CORS_ORIGINS:-["*"]}'
+      AUTH_USERNAME: ${AUTH_USERNAME:-admin}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-admin}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      AUTH_TOKEN_TTL_HOURS: ${AUTH_TOKEN_TTL_HOURS:-24}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL_NAME: ${LLM_MODEL_NAME:-gpt-4.1-mini}
@@ -86,6 +90,8 @@ services:
       OCR_RENDER_SCALE: ${OCR_RENDER_SCALE:-2.0}
     ports:
       - "8000:8000"
+    volumes:
+      - auth_data:/app/data # 认证配置（auth.json）持久化
     healthcheck:
       test:
         [
@@ -122,3 +128,4 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
+  auth_data:

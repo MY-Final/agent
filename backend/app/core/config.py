@@ -83,6 +83,17 @@ class Settings(BaseSettings):
         alias="OCR_RENDER_SCALE",
     )
 
+    auth_username: str = Field(default="admin", alias="AUTH_USERNAME")
+    auth_password: SecretStr = Field(default="admin", alias="AUTH_PASSWORD")
+    auth_secret: SecretStr | None = Field(default=None, alias="AUTH_SECRET")
+    auth_file: str = Field(default="data/auth.json", alias="AUTH_FILE")
+    auth_token_ttl_hours: int = Field(
+        default=24,
+        ge=1,
+        le=720,
+        alias="AUTH_TOKEN_TTL_HOURS",
+    )
+
     @field_validator("minio_endpoint")
     @classmethod
     def normalize_minio_endpoint(cls, value: str) -> str:
